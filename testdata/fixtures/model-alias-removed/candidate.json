@@ -1,0 +1,23 @@
+{
+  "id": "syn-alias-401-001",
+  "observed_at": "2024-03-05T09:00:00Z",
+  "kind": "error_rate_spike",
+  "severity": "high",
+  "workload": {
+    "kind": "Deployment",
+    "name": "inference-client",
+    "namespace": "ml",
+    "source": "default"
+  },
+  "summary": "inference-client: 100% 401 errors on llm calls; started after gateway config update",
+  "evidence": [
+    "llm call failed: status 401 Unauthorized: model alias 'smart' not found",
+    "llm call failed: status 401 Unauthorized: model alias 'smart' not found",
+    "count(status=401, last 30m): 312",
+    "count(status=200, last 30m): 0"
+  ],
+  "raw_metrics": {
+    "success_ratio_1h": 0.0,
+    "error_401_rate": 1.0
+  }
+}

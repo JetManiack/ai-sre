@@ -1,0 +1,23 @@
+{
+  "id": "syn-gw500-001",
+  "observed_at": "2024-02-10T14:00:00Z",
+  "kind": "error_rate_spike",
+  "severity": "critical",
+  "workload": {
+    "kind": "Deployment",
+    "name": "llm-gateway",
+    "namespace": "ai",
+    "source": "default"
+  },
+  "summary": "llm-gateway: success_ratio(1h) == 0 for /v1/chat/completions; /health returns 200",
+  "evidence": [
+    "status_code=500 count=743 (last 1h)",
+    "status_code=200 count=0 (last 1h)",
+    "GET /health → 200 OK",
+    "first failure: 2024-02-10T14:00:02Z (pod start)"
+  ],
+  "raw_metrics": {
+    "success_ratio_1h": 0.0,
+    "req_per_hour": 743.0
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "action": "escalate",
+  "confidence_min": 0.6,
+  "root_cause_contains": ["кэш", "память", "leak", "утечка", "eviction", "cache"]
+}

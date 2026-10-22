@@ -1,0 +1,21 @@
+{
+  "id": "syn-memleak-001",
+  "observed_at": "2024-01-15T10:00:00Z",
+  "kind": "memory_growth",
+  "severity": "high",
+  "workload": {
+    "kind": "Deployment",
+    "name": "myapp-worker",
+    "namespace": "production",
+    "source": "default"
+  },
+  "summary": "myapp-worker RSS growing at ~120 MB/h for the last 3 hours",
+  "evidence": [
+    "container_memory_rss{pod='myapp-worker-6f8d4b-xkq7v'}: 1.8Gi (10:00)",
+    "container_memory_rss{pod='myapp-worker-6f8d4b-xkq7v'}: 1.44Gi (07:00)",
+    "delta: +360 MB over 3h = ~120 MB/h"
+  ],
+  "raw_metrics": {
+    "growth_rate_mb_per_hour": 120.0
+  }
+}
