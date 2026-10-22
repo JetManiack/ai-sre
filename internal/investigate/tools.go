@@ -27,9 +27,37 @@ func ValidateUnitName(unit string) error {
 // All tools are defined at startup; the LLM picks from this fixed list.
 // No bash, no writes, no secret reads.
 type Tool struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage // JSON Schema object (parameters)
+}
+
+// OpenAITool is the wire format for tools in an OpenAI-compatible chat/completions request.
+type OpenAITool struct {
+	Type     string         `json:"type"` // always "function"
+	Function openAIToolFunc `json:"function"`
+}
+
+type openAIToolFunc struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// openAITools converts the internal tool list to OpenAI wire format.
+func openAITools(tools []Tool) []OpenAITool {
+	out := make([]OpenAITool, len(tools))
+	for i, t := range tools {
+		out[i] = OpenAITool{
+			Type: "function",
+			Function: openAIToolFunc{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.InputSchema,
+			},
+		}
+	}
+	return out
 }
 
 // toolSchemas is the canonical tool list exposed to the LLM.

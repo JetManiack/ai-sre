@@ -70,7 +70,7 @@ func runReplay(ctx context.Context, cmd *cli.Command, dir string) error {
 	mem := &stateMemory{db: db}
 	dispatcher := replay.NewDispatcher(f.Responses)
 	llmClient := investigate.NewOpenAIClient(cfg.Investigate.BaseURL, cfg.Investigate.APIKey)
-	agent := investigate.New(cfg.Investigate, dispatcher, mem, llmClient)
+	agent := investigate.NewWithSources(cfg.Investigate, cfg.Sources, dispatcher, mem, llmClient)
 
 	result := agent.Investigate(ctx, f.Candidate)
 

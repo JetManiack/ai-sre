@@ -23,6 +23,10 @@ import (
 	"github.com/JetManiack/ai-sre/internal/observer"
 )
 
+// llmClientInterface is the minimal interface to the OpenAI-compatible endpoint.
+// Identical to llmClient but exported for use in tests without import cycles.
+type llmClientInterface = llmClient
+
 // ToolDispatcher executes a tool call and returns the (possibly trimmed) output.
 // Implementations live in internal/tools/.
 type ToolDispatcher interface {
@@ -50,6 +54,7 @@ type PastInvestigation struct {
 // Agent runs the investigator+decision loop for a single candidate.
 type Agent struct {
 	cfg        config.InvestigateConfig
+	sources    []config.Source // for system prompt
 	dispatcher ToolDispatcher
 	memory     MemoryStore
 	llm        llmClient
@@ -63,6 +68,11 @@ type llmClient interface {
 // New creates an Agent.
 func New(cfg config.InvestigateConfig, dispatcher ToolDispatcher, memory MemoryStore, llm llmClient) *Agent {
 	return &Agent{cfg: cfg, dispatcher: dispatcher, memory: memory, llm: llm}
+}
+
+// NewWithSources creates an Agent with source list for the system prompt.
+func NewWithSources(cfg config.InvestigateConfig, sources []config.Source, dispatcher ToolDispatcher, memory MemoryStore, llm llmClient) *Agent {
+	return &Agent{cfg: cfg, sources: sources, dispatcher: dispatcher, memory: memory, llm: llm}
 }
 
 // Investigate runs the full investigator+decision loop for a candidate.
@@ -80,25 +90,26 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Decision 
 	seen := map[string]int{}
 	var lastErr error
 
+	needFinal := false // set when model finishes without tools and we want JSON schema
 	for step := 0; step < a.cfg.MaxSteps; step++ {
-		// Mandatory final-answer step at MaxSteps-1.
-		forceFinal := step == a.cfg.MaxSteps-1
+		// Mandatory final-answer step at MaxSteps-1, or when explicitly requested.
+		forceFinal := step == a.cfg.MaxSteps-1 || needFinal
 
 		req := ChatRequest{
 			Model:    a.cfg.Model,
 			Messages: msgs,
-			Tools:    toolSchemas,
-			ResponseFormat: &ResponseFormat{
+		}
+		if forceFinal {
+			// Final step: schema only, no tools (guided decoding must not compete with tool calls).
+			req.ResponseFormat = &ResponseFormat{
 				Type:       "json_schema",
 				JSONSchema: decisionSchema(),
-			},
-		}
-		if forceFinal {
-			req.Tools = nil // no more tool calls: produce the final answer now
-		}
-		req.MaxTokens = a.cfg.MaxTokensStep
-		if forceFinal {
+			}
 			req.MaxTokens = a.cfg.MaxTokensFinal
+		} else {
+			// Tool step: tools only, no schema (vLLM guided decoding skips tool calls otherwise).
+			req.Tools = openAITools(toolSchemas)
+			req.MaxTokens = a.cfg.MaxTokensStep
 		}
 
 		stepCtx, stepCancel := context.WithTimeout(ctx, a.cfg.StepTimeout)
@@ -111,44 +122,56 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Decision 
 		}
 
 		// Final answer: parse Decision from content.
-		if resp.FinishReason == "stop" || resp.FinishReason == "end_turn" || forceFinal {
-			d, err := parseDecision(resp.Content)
-			if err != nil {
-				slog.Warn("investigate: parse decision failed", "err", err, "content", resp.Content)
-				return failedDecision(c, fmt.Sprintf("parse failed: %v", err))
+		if forceFinal || resp.FinishReason == "stop" || resp.FinishReason == "end_turn" {
+			if resp.Content == "" && len(resp.ToolCalls) == 0 {
+				// Empty response on a final step — give up.
+				return failedDecision(c, "empty final response")
 			}
-			// Security: bind action target to the originating candidate, not the LLM output.
-			// Evidence and Summary are attacker-controlled text; a prompt injection could
-			// redirect the action to an arbitrary workload. We re-derive target fields here.
-			d = clampDecision(d, c)
-			_ = a.memory.SaveInvestigation(PastInvestigation{
-				ID:            c.ID + "-" + fmt.Sprint(time.Now().UnixNano()),
-				WorkloadName:  c.Workload.Name,
-				Namespace:     c.Workload.Namespace,
-				CandidateKind: string(c.Kind),
-				RootCauseRU:   d.RootCauseRU,
-				Action:        string(d.Action),
-				Confidence:    d.Confidence,
-				OccurredAt:    time.Now(),
-			})
-			return d
+			if resp.Content != "" {
+				d, err := parseDecision(resp.Content)
+				if err != nil {
+					slog.Warn("investigate: parse decision failed", "err", err, "content", resp.Content)
+					return failedDecision(c, fmt.Sprintf("parse failed: %v", err))
+				}
+				// Security: bind action target to the originating candidate, not the LLM output.
+				// Evidence and Summary are attacker-controlled text; a prompt injection could
+				// redirect the action to an arbitrary workload. We re-derive target fields here.
+				d = clampDecision(d, c)
+				_ = a.memory.SaveInvestigation(PastInvestigation{
+					ID:            c.ID + "-" + fmt.Sprint(time.Now().UnixNano()),
+					WorkloadName:  c.Workload.Name,
+					Namespace:     c.Workload.Namespace,
+					CandidateKind: string(c.Kind),
+					RootCauseRU:   d.RootCauseRU,
+					Action:        string(d.Action),
+					Confidence:    d.Confidence,
+					OccurredAt:    time.Now(),
+				})
+				return d
+			}
+			// Model returned tool calls on a final step — treat as tool step this turn,
+			// but mark that next turn must produce JSON.
+			needFinal = true
 		}
 
 		// Tool call step.
 		if len(resp.ToolCalls) == 0 {
-			// Model produced content but didn't finish and didn't call a tool — unusual.
+			// Model produced content without tool calls and without finishing normally.
+			// Trigger a final-answer step next.
 			msgs = append(msgs, Message{Role: "assistant", Content: resp.Content})
+			needFinal = true
 			continue
 		}
+		needFinal = false
 
-		// Append assistant turn with tool calls (convert to wire format).
+		// Append assistant turn with tool calls (OpenAI wire format: Arguments is a JSON string).
 		var rawCalls []RawToolCall
 		for _, tc := range resp.ToolCalls {
 			var rc RawToolCall
 			rc.ID = tc.ID
 			rc.Type = "function"
 			rc.Function.Name = tc.Name
-			rc.Function.Arguments = tc.Input
+			rc.Function.Arguments = string(tc.Input)
 			rawCalls = append(rawCalls, rc)
 		}
 		msgs = append(msgs, Message{Role: "assistant", ToolCalls: rawCalls})
@@ -165,9 +188,11 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Decision 
 					ToolCallID: tc.ID,
 					Content:    "[duplicate call — please produce your final answer now]",
 				})
+				needFinal = true
 				continue
 			}
 
+			slog.Info("investigate: tool call", "step", step, "tool", tc.Name, "input", string(tc.Input))
 			out, err := a.dispatcher.Dispatch(ctx, ToolCall{Name: tc.Name, Input: tc.Input})
 			if err != nil {
 				slog.Warn("investigate: tool dispatch error", "tool", tc.Name, "err", err)
@@ -201,15 +226,21 @@ Rules:
 - Your action field determines what happens: "escalate" means post to the board; other actions are executed only if they are in the operator's allowlist.
 - EscalateMessage should be a complete board post in Russian, including evidence and suggested fix, ready to send.
 - EscalateTo should be the relevant person: use "on-call-dev" for code bugs, "on-call-ops" for operator decisions.
-
-{{if .SystemPrompt}}
+{{if .Sources}}
+Configured log/metrics sources (use in the "source" field of tool calls):
+{{range .Sources}}- {{.Name}} ({{.Kind}})
+{{end}}{{end}}
+{{- if .SystemPrompt}}
 Site context:
 {{.SystemPrompt}}
 {{end}}`))
 
-func (a *Agent) systemPrompt(c observer.Candidate) string {
+func (a *Agent) systemPrompt(_ observer.Candidate) string {
 	var buf bytes.Buffer
-	_ = systemPromptTmpl.Execute(&buf, a.cfg)
+	_ = systemPromptTmpl.Execute(&buf, struct {
+		config.InvestigateConfig
+		Sources []config.Source
+	}{a.cfg, a.sources})
 	return buf.String()
 }
 

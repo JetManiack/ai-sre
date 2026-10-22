@@ -11,29 +11,31 @@ import (
 )
 
 // ChatRequest is an OpenAI-compatible chat completions request.
+// Tools are serialised in the OpenAI {type:function,function:{…}} wire format.
 type ChatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []Message       `json:"messages"`
-	Tools          []Tool          `json:"tools,omitempty"`
+	Tools          []OpenAITool    `json:"tools,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
 }
 
 // Message is a single conversation turn.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Role       string       `json:"role"`
+	Content    string       `json:"content,omitempty"`
 	ToolCalls  []RawToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
+	ToolCallID string       `json:"tool_call_id,omitempty"`
 }
 
 // RawToolCall is the wire format for a tool call inside an assistant message.
+// In OpenAI format, Function.Arguments is a JSON-encoded string, not an object.
 type RawToolCall struct {
 	ID       string `json:"id"`
-	Type     string `json:"type"`
+	Type     string `json:"type"` // "function"
 	Function struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"` // JSON string, e.g. "{\"workload\":\"gruh\"}"
 	} `json:"function"`
 }
 
@@ -113,10 +115,12 @@ func (c *OpenAIClient) ChatCompletionWithTools(ctx context.Context, req ChatRequ
 
 	var toolCalls []ToolCall
 	for _, tc := range ch.Message.ToolCalls {
+		// OpenAI returns arguments as a JSON string; decode it into raw JSON.
+		input := json.RawMessage(tc.Function.Arguments)
 		toolCalls = append(toolCalls, ToolCall{
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
-			Input: tc.Function.Arguments,
+			Input: input,
 		})
 	}
 
