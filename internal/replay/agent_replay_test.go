@@ -56,6 +56,17 @@ func testConfig() config.InvestigateConfig {
 	}
 }
 
+func buildSyntheticRootCause(f *replay.Fixture) string {
+	// For contains_all, include all required tokens so the assertion passes.
+	if len(f.Expected.RootCauseContainsAll) > 0 {
+		return "Обнаружена проблема: " + strings.Join(f.Expected.RootCauseContainsAll, " ")
+	}
+	if len(f.Expected.RootCauseContains) > 0 {
+		return "Обнаружена проблема: " + f.Expected.RootCauseContains[0]
+	}
+	return "Аномалия обнаружена, требует расследования."
+}
+
 func runFixtureTest(t *testing.T, fixtureDir string) {
 	t.Helper()
 	f, err := replay.Load(fixtureDir)
@@ -89,32 +100,9 @@ func runFixtureTest(t *testing.T, fixtureDir string) {
 	agent := investigate.New(testConfig(), d, noopMemory{}, llm)
 	result := agent.Investigate(context.Background(), f.Candidate)
 
-	if result.Action != f.Expected.Action {
-		t.Errorf("action: got %q, want %q", result.Action, f.Expected.Action)
+	if err := replay.CheckExpected(f.Expected, result.Action, result.Confidence, result.RootCauseRU); err != nil {
+		t.Error(err)
 	}
-	if result.Confidence < f.Expected.ConfidenceMin {
-		t.Errorf("confidence: got %.2f, want >= %.2f", result.Confidence, f.Expected.ConfidenceMin)
-	}
-	if len(f.Expected.RootCauseContains) > 0 {
-		lower := strings.ToLower(result.RootCauseRU)
-		matched := false
-		for _, substr := range f.Expected.RootCauseContains {
-			if strings.Contains(lower, strings.ToLower(substr)) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			t.Errorf("root_cause_ru %q does not contain any of %v", result.RootCauseRU, f.Expected.RootCauseContains)
-		}
-	}
-}
-
-func buildSyntheticRootCause(f *replay.Fixture) string {
-	if len(f.Expected.RootCauseContains) > 0 {
-		return "Обнаружена проблема: " + f.Expected.RootCauseContains[0]
-	}
-	return "Аномалия обнаружена, требует расследования."
 }
 
 func TestAgentReplay_MemoryLeak(t *testing.T) {

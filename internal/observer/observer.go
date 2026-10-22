@@ -83,15 +83,19 @@ func (o *Observer) pollAll(ctx context.Context) {
 func (o *Observer) emit(c Candidate) {
 	quiet, err := o.quiet.IsQuiet(c.ID)
 	if err != nil {
-		slog.Warn("observer: quiet check error", "fingerprint", c.ID, "err", err)
+		slog.Warn("observer: quiet check error, skipping emit", "fingerprint", c.ID, "err", err)
+		return // fail-closed: a DB error must not cause duplicate investigations
 	}
 	if quiet {
 		return
 	}
-	// Set quiet window immediately to prevent duplicate investigations.
-	_ = o.quiet.SetQuiet(c.ID, time.Now().Add(o.cfg.QuietWindowDefault))
 	select {
 	case o.candidates <- c:
+		// Set quiet window only after successful delivery — a dropped candidate
+		// must not silence the next tick.
+		if err := o.quiet.SetQuiet(c.ID, time.Now().Add(o.cfg.QuietWindowDefault)); err != nil {
+			slog.Warn("observer: could not set quiet window", "fingerprint", c.ID, "err", err)
+		}
 	default:
 		slog.Warn("observer: candidate channel full, dropping", "id", c.ID, "workload", c.Workload.Name)
 	}

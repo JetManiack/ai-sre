@@ -1,5 +1,5 @@
 {
   "action": "escalate",
   "confidence_min": 0.6,
-  "root_cause_contains": ["alias", "model", "401", "gateway", "конфиг", "шлюз"]
+  "root_cause_contains_all": ["alias", "401"]
 }

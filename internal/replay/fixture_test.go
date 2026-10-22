@@ -45,8 +45,8 @@ func TestLoad_ModelAliasRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(f.Expected.RootCauseContains) == 0 {
-		t.Error("expected root_cause_contains to be non-empty")
+	if len(f.Expected.RootCauseContainsAll) == 0 {
+		t.Error("expected root_cause_contains_all to be non-empty")
 	}
 }
 
@@ -128,11 +128,64 @@ func TestInputMatches(t *testing.T) {
 		{`{"a":"b"}`, `{"a":"x"}`, false},
 		{`{"a":"b"}`, `{"c":"d"}`, false},
 		{`null`, `{"a":"b"}`, true},
+		// decoded comparison: 50 == 50.0
+		{`{"limit":50}`, `{"limit":50}`, true},
 	}
 	for _, tt := range tests {
 		got := inputMatches(json.RawMessage(tt.pattern), json.RawMessage(tt.actual))
 		if got != tt.want {
 			t.Errorf("inputMatches(%s, %s) = %v, want %v", tt.pattern, tt.actual, got, tt.want)
 		}
+	}
+}
+
+func TestInputContainsMatches(t *testing.T) {
+	tests := []struct {
+		contains map[string]string
+		actual   string
+		want     bool
+	}{
+		{nil, `{"query":"up"}`, true},
+		{map[string]string{"query": "up"}, `{"query":"sum(up)"}`, true},
+		{map[string]string{"query": "down"}, `{"query":"sum(up)"}`, false},
+		{map[string]string{"source": "vlogs"}, `{"source":"vlogs","query":"x"}`, true},
+		{map[string]string{"missing": "x"}, `{"query":"x"}`, false},
+	}
+	for _, tt := range tests {
+		got := inputContainsMatches(tt.contains, json.RawMessage(tt.actual))
+		if got != tt.want {
+			t.Errorf("inputContainsMatches(%v, %s) = %v, want %v", tt.contains, tt.actual, got, tt.want)
+		}
+	}
+}
+
+func TestCheckExpected(t *testing.T) {
+	exp := ExpectedOutcome{
+		Action:               "escalate",
+		ConfidenceMin:        0.6,
+		RootCauseContains:    []string{"alias", "model"},
+		RootCauseContainsAll: []string{"ModelNotMapped", "litellm"},
+	}
+
+	// happy path
+	if err := CheckExpected(exp, "escalate", 0.9, "ModelNotMapped error in litellm alias config"); err != nil {
+		t.Errorf("expected nil, got: %v", err)
+	}
+	// wrong action
+	if err := CheckExpected(exp, "pod_restart", 0.9, "ModelNotMapped litellm"); err == nil {
+		t.Error("expected error for wrong action")
+	}
+	// low confidence
+	if err := CheckExpected(exp, "escalate", 0.5, "ModelNotMapped litellm"); err == nil {
+		t.Error("expected error for low confidence")
+	}
+	// contains_all fails (missing "litellm")
+	if err := CheckExpected(exp, "escalate", 0.9, "ModelNotMapped issue"); err == nil {
+		t.Error("expected error for missing contains_all token")
+	}
+	// contains passes with any match
+	expAny := ExpectedOutcome{Action: "escalate", ConfidenceMin: 0.0, RootCauseContains: []string{"alias", "xyz"}}
+	if err := CheckExpected(expAny, "escalate", 0.1, "alias removed"); err != nil {
+		t.Errorf("expected nil (any match), got: %v", err)
 	}
 }

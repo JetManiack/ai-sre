@@ -7,7 +7,7 @@
 //	expected.json        – the ExpectedOutcome the test asserts
 //
 // The ToolDispatcher built by [NewDispatcher] replays tool responses in order,
-// keyed by (tool_name, input_json). An unmatched call returns an error.
+// keyed by (tool_name, input). An unmatched call returns an error.
 package replay
 
 import (
@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 
 	"github.com/JetManiack/ai-sre/internal/investigate"
 	"github.com/JetManiack/ai-sre/internal/observer"
@@ -27,10 +29,14 @@ import (
 type ToolResponse struct {
 	// Tool is the tool name (e.g. "metrics_query").
 	Tool string `json:"tool"`
-	// InputMatch is a JSON object whose keys must all appear with the same
-	// values in the actual tool input. Extra keys in the actual input are
-	// ignored (partial match). An empty object matches any input.
+	// InputMatch is a JSON object whose keys must all appear with semantically equal
+	// values in the actual tool input (decoded comparison, not raw bytes). Extra keys
+	// in the actual input are ignored. An empty object {} matches any input.
 	InputMatch json.RawMessage `json:"input_match"`
+	// InputContains is an optional map of key → substring. For each pair, the actual
+	// input must have that key, and its string value must contain the substring.
+	// Useful for matching free-form query strings from a live model.
+	InputContains map[string]string `json:"input_contains,omitempty"`
 	// Output is the string the dispatcher returns.
 	Output string `json:"output"`
 	// Error, if non-empty, causes the dispatcher to return this as an error.
@@ -43,8 +49,12 @@ type ExpectedOutcome struct {
 	Action investigate.ActionKind `json:"action"`
 	// ConfidenceMin is the minimum required confidence (0–1).
 	ConfidenceMin float64 `json:"confidence_min"`
-	// RootCauseContains are substrings that must appear in RootCauseRU (case-insensitive).
+	// RootCauseContains lists substrings where AT LEAST ONE must appear in
+	// RootCauseRU (case-insensitive). Use for broad "is the right topic" checks.
 	RootCauseContains []string `json:"root_cause_contains,omitempty"`
+	// RootCauseContainsAll lists substrings where ALL must appear in RootCauseRU
+	// (case-insensitive). Use for precise "must mention X and Y" assertions.
+	RootCauseContainsAll []string `json:"root_cause_contains_all,omitempty"`
 }
 
 // Fixture is a fully loaded test case.
@@ -100,13 +110,14 @@ func Load(dir string) (*Fixture, error) {
 	return f, nil
 }
 
-// inputMatches returns true if all keys in pattern appear with equal values in actual.
-// Both must be JSON objects.
+// inputMatches returns true if all keys in pattern appear with semantically equal
+// values in actual (decoded via interface{}, not raw-byte comparison).
+// Both must be JSON objects. An empty or null pattern matches everything.
 func inputMatches(pattern, actual json.RawMessage) bool {
 	if len(pattern) == 0 || string(pattern) == "{}" || string(pattern) == "null" {
 		return true
 	}
-	var p, a map[string]json.RawMessage
+	var p, a map[string]any
 	if err := json.Unmarshal(pattern, &p); err != nil {
 		return false
 	}
@@ -118,7 +129,33 @@ func inputMatches(pattern, actual json.RawMessage) bool {
 		if !ok {
 			return false
 		}
-		if string(pv) != string(av) {
+		if !reflect.DeepEqual(pv, av) {
+			return false
+		}
+	}
+	return true
+}
+
+// inputContainsMatches returns true if for every (key, substr) in contains,
+// the actual input has that key and its string value contains substr (case-sensitive).
+func inputContainsMatches(contains map[string]string, actual json.RawMessage) bool {
+	if len(contains) == 0 {
+		return true
+	}
+	var a map[string]any
+	if err := json.Unmarshal(actual, &a); err != nil {
+		return false
+	}
+	for k, substr := range contains {
+		v, ok := a[k]
+		if !ok {
+			return false
+		}
+		s, ok := v.(string)
+		if !ok {
+			return false
+		}
+		if !strings.Contains(s, substr) {
 			return false
 		}
 	}
@@ -149,6 +186,9 @@ func (d *Dispatcher) Dispatch(_ context.Context, call investigate.ToolCall) (str
 		if !inputMatches(r.InputMatch, call.Input) {
 			continue
 		}
+		if !inputContainsMatches(r.InputContains, call.Input) {
+			continue
+		}
 		d.used[i] = true
 		if r.Error != "" {
 			return "", fmt.Errorf("%s", r.Error)
@@ -156,4 +196,34 @@ func (d *Dispatcher) Dispatch(_ context.Context, call investigate.ToolCall) (str
 		return r.Output, nil
 	}
 	return "", fmt.Errorf("replay: no response for tool=%q input=%s", call.Name, call.Input)
+}
+
+// CheckExpected validates a Decision against an ExpectedOutcome.
+// Returns a non-nil error describing the first failed assertion.
+func CheckExpected(exp ExpectedOutcome, action investigate.ActionKind, confidence float64, rootCauseRU string) error {
+	if action != exp.Action {
+		return fmt.Errorf("action: got %q, want %q", action, exp.Action)
+	}
+	if confidence < exp.ConfidenceMin {
+		return fmt.Errorf("confidence: got %.2f, want >= %.2f", confidence, exp.ConfidenceMin)
+	}
+	lower := strings.ToLower(rootCauseRU)
+	if len(exp.RootCauseContains) > 0 {
+		matched := false
+		for _, substr := range exp.RootCauseContains {
+			if strings.Contains(lower, strings.ToLower(substr)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("root_cause_ru %q: none of %v matched", rootCauseRU, exp.RootCauseContains)
+		}
+	}
+	for _, substr := range exp.RootCauseContainsAll {
+		if !strings.Contains(lower, strings.ToLower(substr)) {
+			return fmt.Errorf("root_cause_ru %q: required substring %q not found", rootCauseRU, substr)
+		}
+	}
+	return nil
 }

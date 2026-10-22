@@ -40,7 +40,16 @@ An empty `{}` matches any input.
 {"tool": "k8s_events",      "input_match": {},                    "output": "Normal ..."}
 {"tool": "host_cmd",        "input_match": {"cmd":"df_h"},        "output": "Filesystem ..."}
 {"tool": "memory_recall",   "input_match": {},                    "error": "db unavailable"}
+{"tool": "logs_query",      "input_match": {"source":"vlogs"},    "input_contains": {"query": "500"}, "output": "..."}
 ```
+
+**`input_match`** — partial decoded comparison (not raw bytes). All listed keys must
+equal the actual call's values. `50` and `50.0` are equal. Extra keys are ignored.
+
+**`input_contains`** (optional) — for each `key: substr`, the actual input must have
+that key with a string value containing the substring. Use this when the full query
+string differs between a mock and a live model (e.g. match on `"source":"vlogs"` in
+`input_match`, and `"query":"500"` in `input_contains`).
 
 Available tools: `memory_recall`, `metrics_query`, `logs_query`, `k8s_describe`,
 `k8s_logs`, `k8s_events`, `k8s_top`, `host_cmd`.
@@ -51,14 +60,19 @@ Assertions the test makes on the resulting `Decision`.
 
 ```json
 {
-  "action":               "escalate | pod_restart | rollout_restart | scale | systemd_restart",
-  "confidence_min":       0.6,
-  "root_cause_contains":  ["substring1", "substring2"]
+  "action":                  "escalate | pod_restart | rollout_restart | scale | systemd_restart",
+  "confidence_min":          0.6,
+  "root_cause_contains":     ["substring1", "substring2"],
+  "root_cause_contains_all": ["must-have-1", "must-have-2"]
 }
 ```
 
-`root_cause_contains`: at least one substring must appear (case-insensitive) in
-`root_cause_ru`. Useful for confirming the model identified the right signal.
+**`root_cause_contains`** — at least ONE substring must appear (case-insensitive) in
+`root_cause_ru`. Use for broad topic checks, e.g. `["ModelNotMapped", "litellm", "500"]`.
+
+**`root_cause_contains_all`** — ALL substrings must appear. Use for precise checks where
+the diagnosis must name specific signals, e.g. `["ModelNotMapped", "litellm"]`. Prefer
+this over a long `root_cause_contains` list to avoid false positives.
 
 ## Synthetic fixture conventions
 
