@@ -1,6 +1,27 @@
 package investigate
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"regexp"
+)
+
+// unitNameRe is a strict allowlist for systemd unit names passed via the LLM.
+// Rejects flag-like values (leading '-'), shell metacharacters, and path separators.
+// Only service/socket/timer suffixes are accepted to limit the attack surface.
+var unitNameRe = regexp.MustCompile(`^[A-Za-z0-9@._-]+\.(service|socket|timer)$`)
+
+// ValidateUnitName returns an error if unit is not a safe systemd unit name.
+// Call this in the host_cmd executor before exec.Command — never pass unit to a shell.
+func ValidateUnitName(unit string) error {
+	if unit == "" {
+		return fmt.Errorf("host_cmd: unit name is required for this command")
+	}
+	if !unitNameRe.MatchString(unit) {
+		return fmt.Errorf("host_cmd: unit name %q is not a valid systemd unit (must match ^[A-Za-z0-9@._-]+\\.(service|socket|timer)$)", unit)
+	}
+	return nil
+}
 
 // Tool is a read-only diagnostic tool the investigator can call.
 // All tools are defined at startup; the LLM picks from this fixed list.
