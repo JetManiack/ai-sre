@@ -14,7 +14,10 @@ type Config struct {
 	// State is the SQLite database path for fingerprints, baselines and quiet windows.
 	State string `yaml:"state"`
 
-	// Sources lists log/metrics backends (VictoriaLogs, Loki, Prometheus, etc.).
+	// MCPServers lists MCP servers whose tools the agent may call.
+	MCPServers []MCPServer `yaml:"mcp_servers"`
+
+	// Sources lists log/metrics backends (used by observer adapters for polling).
 	Sources []Source `yaml:"sources"`
 
 	// Kubernetes configures the k8s adapter. Omit on bare Linux.
@@ -34,12 +37,26 @@ type Config struct {
 	Sinks SinksConfig `yaml:"sinks"`
 }
 
-// Source is a log or metrics backend.
-type Source struct {
-	Name  string `yaml:"name"`
-	Kind  string `yaml:"kind"` // "victorialogs", "loki", "prometheus", "victoriametrics"
-	URL   string `yaml:"url"`
+// MCPServer is an MCP (Model Context Protocol) server that exposes tools.
+// The agent calls its tools via Streamable HTTP (POST /mcp, SSE or JSON response).
+type MCPServer struct {
+	// Name is a short identifier (e.g. "incident-io", "loki", "thanos").
+	Name string `yaml:"name"`
+	// URL is the base URL of the MCP server (e.g. http://mcp-loki:8080).
+	URL string `yaml:"url"`
+	// Token is an optional Bearer token for Authorization header.
 	Token string `yaml:"token"`
+	// Tools lists which tool names from this server are available to the agent.
+	// Empty means all tools the server advertises.
+	Tools []string `yaml:"tools"`
+}
+
+// Source is a log or metrics backend (used by observer adapters, not the agent tools).
+type Source struct {
+	Name   string `yaml:"name"`
+	Kind   string `yaml:"kind"` // "victorialogs", "loki", "prometheus", "victoriametrics"
+	URL    string `yaml:"url"`
+	Token  string `yaml:"token"`
 	CAFile string `yaml:"ca_file"`
 }
 
@@ -110,13 +127,19 @@ type InvestigateConfig struct {
 // ActionsConfig lists autonomous actions the agent may execute.
 // All fields default to false (escalate-only by default).
 type ActionsConfig struct {
-	AllowPodRestart      bool `yaml:"allow_pod_restart"`
-	AllowRolloutRestart  bool `yaml:"allow_rollout_restart"`
+	AllowPodRestart     bool `yaml:"allow_pod_restart"`
+	AllowRolloutRestart bool `yaml:"allow_rollout_restart"`
 	// AllowScale permits scaling a deployment up or to its configured baseline.
 	// The agent may NOT scale below baseline.
-	AllowScale           bool `yaml:"allow_scale"`
+	AllowScale bool `yaml:"allow_scale"`
 	// AllowSystemdRestart permits `systemctl restart <unit>` on bare Linux.
-	AllowSystemdRestart  bool `yaml:"allow_systemd_restart"`
+	AllowSystemdRestart bool `yaml:"allow_systemd_restart"`
+
+	// K8sWriteURL is the base URL of a k8s write MCP server.
+	// Required for pod_restart, rollout_restart, scale.
+	// If empty, those actions fail gracefully and the decision is escalated.
+	K8sWriteURL   string `yaml:"k8s_write_url"`
+	K8sWriteToken string `yaml:"k8s_write_token"`
 }
 
 // SinksConfig lists output channels.
@@ -132,6 +155,9 @@ type BoardSinkConfig struct {
 	URL         string `yaml:"url"`
 	Token       string `yaml:"token"`
 	MinSeverity string `yaml:"min_severity"`
+	// ThreadID pins all escalations to a specific board thread.
+	// If empty, a new thread is created per workload.
+	ThreadID string `yaml:"thread_id"`
 	// MentionActors maps severity levels to board actor IDs to @-mention.
 	// e.g. {"critical": "operator-actor-id"}
 	MentionActors map[string]string `yaml:"mention_actors"`

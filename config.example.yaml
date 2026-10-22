@@ -1,0 +1,79 @@
+# ai-sre example configuration
+# Copy to /etc/ai-sre/config.yaml and adjust for your environment.
+
+state: /var/lib/ai-sre/state.db
+
+# MCP servers the agent may call as tools during investigation.
+# The dispatcher auto-discovers available tools from each server via tools/list
+# unless you specify an explicit `tools:` list.
+mcp_servers:
+  - name: incident-io
+    url: http://mcp-incident-io:8080
+    token: ""          # set via AISRE_MCP_INCIDENT_IO_TOKEN env or secret mount
+    # tools: []        # empty = all tools from this server
+
+  - name: loki
+    url: http://mcp-loki:8080
+    token: ""
+    tools: [logs_query]
+
+  - name: thanos
+    url: http://mcp-thanos:8080
+    token: ""
+    tools: [metrics_query]
+
+# Sources for the observer adapters (log/metrics polling for anomaly detection).
+# Different from mcp_servers: sources are polled by the observer, not called by the agent.
+sources:
+  - name: loki
+    kind: loki
+    url: http://loki:3100
+    token: ""
+
+investigate:
+  enabled: true
+  base_url: http://vllm:8000/v1    # OpenAI-compatible endpoint
+  api_key: ""                        # set via AISRE_APIKEY or secret mount
+  model: google/gemma-4-26b-a4b-qat # or any OpenAI-compatible model
+  max_steps: 8
+  max_tokens_step: 512
+  max_tokens_final: 4096
+  step_timeout: 120s
+  total_timeout: 600s
+  concurrency: 1                     # max simultaneous investigations
+  system_prompt: |
+    Site context: production Kubernetes cluster.
+    Escalate code bugs to on-call-dev, infra issues to on-call-ops.
+
+observer:
+  interval: 60s
+  quiet_window_default: 1h
+  error_rate_threshold_pct: 5.0
+  memory_growth_threshold_mb_per_hour: 50
+  fail_open_patterns:
+    - OOMKilled
+    - connection refused
+    - ModelNotMappedError
+    - "No api key passed"
+
+actions:
+  # All false by default — escalate-only mode.
+  allow_pod_restart: false
+  allow_rollout_restart: false
+  allow_scale: false
+  allow_systemd_restart: false
+  # k8s_write_url: http://mcp-k8s-write:8080   # uncomment to enable k8s write actions
+  # k8s_write_token: ""
+
+sinks:
+  stdout_json: true
+  board:
+    enabled: false
+    url: ""            # http://mcp-board:8080
+    token: ""
+    min_severity: high
+    # thread_id: ""    # pin all escalations to one thread; empty = new thread per workload
+  webhook:
+    enabled: false
+    url: ""
+    token: ""
