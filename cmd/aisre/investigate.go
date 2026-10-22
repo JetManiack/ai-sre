@@ -81,7 +81,7 @@ func runReplay(ctx context.Context, cmd *cli.Command, dir string) error {
 	}
 
 	// Validate against expected outcome if present.
-	if err := replay.CheckExpected(f.Expected, result.Action, result.Confidence, result.RootCauseRU); err != nil {
+	if err := replay.CheckExpected(f.Expected, result); err != nil {
 		slog.Warn("aisre: replay assertion failed", "err", err)
 		fmt.Fprintf(os.Stderr, "ASSERTION FAILED: %v\n", err)
 		os.Exit(2)

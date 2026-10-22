@@ -224,7 +224,7 @@ Rules:
 - Think step by step; call one or two tools per step.
 - When you are confident, or at step 7, produce your final JSON answer.
 - Your action field determines what happens: "escalate" means post to the board; other actions are executed only if they are in the operator's allowlist.
-- EscalateMessage should be a complete board post in Russian, including evidence and suggested fix, ready to send.
+- EscalateMessage should be a brief board post in Russian (3–5 sentences max): root cause, key evidence, suggested fix. Do NOT repeat yourself.
 - EscalateTo should be the relevant person: use "on-call-dev" for code bugs, "on-call-ops" for operator decisions.
 {{if .Sources}}
 Configured log/metrics sources (use in the "source" field of tool calls):
@@ -344,22 +344,25 @@ func trimOutput(s string, maxTokens int) string {
 
 // decisionSchema returns the JSON schema for the final Decision output.
 func decisionSchema() json.RawMessage {
+	str := func(minLen, maxLen int) map[string]any {
+		return map[string]any{"type": "string", "minLength": minLen, "maxLength": maxLen}
+	}
 	return mustJSON(map[string]any{
 		"name":   "Decision",
 		"strict": true,
 		"schema": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"root_cause_ru":    map[string]any{"type": "string"},
-				"evidence":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-				"confidence":       map[string]any{"type": "number"},
-				"suggested_fix_ru": map[string]any{"type": "string"},
-				"next_checks":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"root_cause_ru":    str(10, 400),
+				"evidence":         map[string]any{"type": "array", "items": str(5, 200), "minItems": 1, "maxItems": 10},
+				"confidence":       map[string]any{"type": "number", "minimum": 0.0, "maximum": 1.0},
+				"suggested_fix_ru": str(5, 300),
+				"next_checks":      map[string]any{"type": "array", "items": str(5, 150), "maxItems": 5},
 				"action":           map[string]any{"type": "string", "enum": []string{"escalate", "pod_restart", "rollout_restart", "scale", "systemd_restart"}},
-				"action_target":    map[string]any{"type": "string"},
-				"action_namespace": map[string]any{"type": "string"},
-				"escalate_to":      map[string]any{"type": "string"},
-				"escalate_message": map[string]any{"type": "string"},
+				"action_target":    str(0, 100),
+				"action_namespace": str(0, 100),
+				"escalate_to":      str(0, 50),
+				"escalate_message": str(0, 600),
 			},
 			"required": []string{"root_cause_ru", "evidence", "confidence", "suggested_fix_ru", "action"},
 		},

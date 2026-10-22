@@ -200,29 +200,32 @@ func (d *Dispatcher) Dispatch(_ context.Context, call investigate.ToolCall) (str
 
 // CheckExpected validates a Decision against an ExpectedOutcome.
 // Returns a non-nil error describing the first failed assertion.
-func CheckExpected(exp ExpectedOutcome, action investigate.ActionKind, confidence float64, rootCauseRU string) error {
-	if action != exp.Action {
-		return fmt.Errorf("action: got %q, want %q", action, exp.Action)
+// For root_cause_* checks the search corpus is root_cause_ru + escalate_message
+// so that models which embed the diagnosis in the escalation text still pass.
+func CheckExpected(exp ExpectedOutcome, d investigate.Decision) error {
+	if d.Action != exp.Action {
+		return fmt.Errorf("action: got %q, want %q", d.Action, exp.Action)
 	}
-	if confidence < exp.ConfidenceMin {
-		return fmt.Errorf("confidence: got %.2f, want >= %.2f", confidence, exp.ConfidenceMin)
+	if d.Confidence < exp.ConfidenceMin {
+		return fmt.Errorf("confidence: got %.2f, want >= %.2f", d.Confidence, exp.ConfidenceMin)
 	}
-	lower := strings.ToLower(rootCauseRU)
+	// Search both root_cause_ru and escalate_message for diagnostic substrings.
+	corpus := strings.ToLower(d.RootCauseRU + " " + d.EscalateMessage)
 	if len(exp.RootCauseContains) > 0 {
 		matched := false
 		for _, substr := range exp.RootCauseContains {
-			if strings.Contains(lower, strings.ToLower(substr)) {
+			if strings.Contains(corpus, strings.ToLower(substr)) {
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			return fmt.Errorf("root_cause_ru %q: none of %v matched", rootCauseRU, exp.RootCauseContains)
+			return fmt.Errorf("root_cause_ru+escalate_message: none of %v matched in %q", exp.RootCauseContains, corpus)
 		}
 	}
 	for _, substr := range exp.RootCauseContainsAll {
-		if !strings.Contains(lower, strings.ToLower(substr)) {
-			return fmt.Errorf("root_cause_ru %q: required substring %q not found", rootCauseRU, substr)
+		if !strings.Contains(corpus, strings.ToLower(substr)) {
+			return fmt.Errorf("root_cause_ru+escalate_message: required substring %q not found", substr)
 		}
 	}
 	return nil

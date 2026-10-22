@@ -100,7 +100,7 @@ func runFixtureTest(t *testing.T, fixtureDir string) {
 	agent := investigate.New(testConfig(), d, noopMemory{}, llm)
 	result := agent.Investigate(context.Background(), f.Candidate)
 
-	if err := replay.CheckExpected(f.Expected, result.Action, result.Confidence, result.RootCauseRU); err != nil {
+	if err := replay.CheckExpected(f.Expected, result); err != nil {
 		t.Error(err)
 	}
 }
