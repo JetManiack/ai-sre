@@ -93,6 +93,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 	}
 
 	seen := map[string]int{}
+	toolOutputs := map[string]string{} // cached results for dup-guard replay
 	var lastErr error
 	needFinal := false
 
@@ -195,12 +196,25 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 		for _, tc := range resp.ToolCalls {
 			sig := tc.Name + "|" + string(tc.Input)
 			seen[sig]++
-			if seen[sig] > 1 {
-				slog.Info("investigate: dup tool call, forcing final", "tool", tc.Name)
+			if seen[sig] == 2 {
+				// First repeat: replay the cached result so the model has the
+				// data in context, but nudge it to use a different tool next.
+				cached := toolOutputs[sig]
+				slog.Info("investigate: dup tool call, replaying cached result", "tool", tc.Name)
 				msgs = append(msgs, Message{
 					Role:       "tool",
 					ToolCallID: tc.ID,
-					Content:    "[duplicate call — please produce your final answer now]",
+					Content:    cached + "\n[already called — result replayed; use a different tool next]",
+				})
+				continue
+			}
+			if seen[sig] > 2 {
+				// Second repeat: stop looping, force a final answer.
+				slog.Info("investigate: dup tool call repeated twice, forcing final", "tool", tc.Name)
+				msgs = append(msgs, Message{
+					Role:       "tool",
+					ToolCallID: tc.ID,
+					Content:    "[called too many times — please produce your final answer now]",
 				})
 				needFinal = true
 				continue
@@ -213,6 +227,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 				out = fmt.Sprintf("[error: %v]", err)
 			}
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
+			toolOutputs[sig] = out
 			msgs = append(msgs, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
