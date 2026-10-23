@@ -71,11 +71,19 @@ func runServe(ctx context.Context, cmd *cli.Command) error {
 	var wg sync.WaitGroup
 
 	// Grafana/Alertmanager webhook receiver is the sole input source.
-	addr := cfg.Observer.AlertWebhook.Addr
+	// Requires alert_webhook.enabled: true and a non-empty token in config.
+	wh := cfg.Observer.AlertWebhook
+	if !wh.Enabled {
+		return fmt.Errorf("serve: observer.alert_webhook.enabled must be true — it is the only input source")
+	}
+	if wh.Token == "" {
+		return fmt.Errorf("serve: observer.alert_webhook.token must be set — unauthenticated webhook is not allowed")
+	}
+	addr := wh.Addr
 	if addr == "" {
 		addr = ":8081"
 	}
-	recv := observer.NewWebhookReceiver(addr, cfg.Observer.AlertWebhook.Token, candidateCh)
+	recv := observer.NewWebhookReceiver(addr, wh.Token, candidateCh)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

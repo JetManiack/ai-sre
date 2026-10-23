@@ -2,6 +2,7 @@ package observer
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -60,12 +61,13 @@ func (r *WebhookReceiver) handleWebhook(w http.ResponseWriter, req *http.Request
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.token != "" {
-		auth := req.Header.Get("Authorization")
-		if auth != "Bearer "+r.token {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	// Token is always required (serve.go enforces non-empty at startup).
+	// Use constant-time comparison to prevent timing attacks.
+	auth := req.Header.Get("Authorization")
+	expected := "Bearer " + r.token
+	if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 	body, err := io.ReadAll(io.LimitReader(req.Body, 256*1024))
 	if err != nil {

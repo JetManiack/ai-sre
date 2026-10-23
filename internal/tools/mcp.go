@@ -288,7 +288,9 @@ func (c *mcpClient) listToolsOnce(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	// Streamable HTTP requires both types; some servers (kubernetes-mcp-server)
+	// return 400 when only application/json is present.
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	c.addAuthHeaders(req)
 
 	resp, err := c.hc.Do(req)
@@ -298,7 +300,12 @@ func (c *mcpClient) listToolsOnce(ctx context.Context) error {
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 
-	// Handle SSE responses from some servers.
+	if resp.StatusCode != http.StatusOK {
+		slog.Warn("mcp: tools/list non-200", "server", c.name, "status", resp.StatusCode, "body", string(raw[:min(len(raw), 200)]))
+		return nil // non-fatal: server stays excluded from routing
+	}
+
+	// Handle SSE responses.
 	ct := resp.Header.Get("Content-Type")
 	if strings.Contains(ct, "text/event-stream") {
 		raw = extractSSEData(raw)
@@ -321,6 +328,13 @@ func (c *mcpClient) listToolsOnce(ctx context.Context) error {
 		slog.Info("mcp server: tools listed", "server", c.name, "count", len(c.tools))
 	}
 	return nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Dispatcher routes ToolCall to the appropriate MCP server.
