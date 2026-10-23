@@ -364,17 +364,32 @@ func NewDispatcher(ctx context.Context, servers []config.MCPServer, memory inves
 }
 
 // DiscoveredTools returns all tools discovered from MCP servers.
+// Tool names are prefixed with the server name to avoid collisions when multiple
+// servers expose identically-named tools (e.g. both victoriametrics and
+// victorialogs export "query"). The prefix format is "<server>__<tool>".
 // The agent offers exactly these tools to the LLM — no hardcoded additions.
 func (d *Dispatcher) DiscoveredTools() []investigate.Tool {
 	var out []investigate.Tool
+	// Track bare names to detect collisions.
+	seen := map[string]int{}
+	for _, s := range d.servers {
+		for _, def := range s.defs {
+			seen[def.Name]++
+		}
+	}
 	for _, s := range d.servers {
 		for _, def := range s.defs {
 			schema := def.InputSchema
 			if len(schema) == 0 {
 				schema = []byte(`{"type":"object","properties":{}}`)
 			}
+			name := def.Name
+			// Prefix only when the bare name collides across servers.
+			if seen[def.Name] > 1 {
+				name = s.name + "__" + def.Name
+			}
 			out = append(out, investigate.Tool{
-				Name:        def.Name,
+				Name:        name,
 				Description: def.Description,
 				InputSchema: schema,
 			})
@@ -384,9 +399,21 @@ func (d *Dispatcher) DiscoveredTools() []investigate.Tool {
 }
 
 // Dispatch routes a ToolCall to the right MCP server, or handles memory_recall locally.
+// If the tool name contains a server prefix (<server>__<tool>), the prefix is stripped
+// and the call is routed to that specific server.
 func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (string, error) {
 	if call.Name == "memory_recall" {
 		return d.dispatchMemoryRecall(call.Input)
+	}
+	// Handle prefixed names: "metrics__query" → server "metrics", tool "query".
+	serverName, toolName := splitToolName(call.Name)
+	if serverName != "" {
+		for _, s := range d.servers {
+			if s.name == serverName && s.handles(toolName) {
+				return s.call(ctx, toolName, call.Input)
+			}
+		}
+		return "", fmt.Errorf("tools dispatcher: server %q does not handle tool %q", serverName, toolName)
 	}
 	for _, s := range d.servers {
 		if s.handles(call.Name) {
@@ -394,6 +421,15 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 		}
 	}
 	return "", fmt.Errorf("tools dispatcher: no server handles tool %q", call.Name)
+}
+
+// splitToolName splits "server__tool" into ("server", "tool").
+// Returns ("", name) if there is no prefix.
+func splitToolName(name string) (server, tool string) {
+	if idx := strings.Index(name, "__"); idx > 0 {
+		return name[:idx], name[idx+2:]
+	}
+	return "", name
 }
 
 func (d *Dispatcher) dispatchMemoryRecall(input json.RawMessage) (string, error) {

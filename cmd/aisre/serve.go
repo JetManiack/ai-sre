@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -50,14 +51,14 @@ func runServe(ctx context.Context, cmd *cli.Command) error {
 	// Build the LLM client.
 	llmClient := investigate.NewOpenAIClient(cfg.Investigate.BaseURL, cfg.Investigate.APIKey)
 
-	// Discover tools from MCP servers and build the agent factory.
-	// If no MCP servers advertised tools, fall back to built-in toolSchemas.
+	// Discover tools from MCP servers. In serve mode we require at least one
+	// MCP server to have advertised tools — hardcoded fallback is disabled.
 	discoveredTools := dispatcher.DiscoveredTools()
+	if len(discoveredTools) == 0 {
+		return fmt.Errorf("serve: no tools discovered from MCP servers; check mcp_servers config and server connectivity")
+	}
 	newAgent := func() *investigate.Agent {
-		if len(discoveredTools) > 0 {
-			return investigate.NewWithTools(cfg.Investigate, cfg.Sources, discoveredTools, dispatcher, mem, llmClient)
-		}
-		return investigate.NewWithSources(cfg.Investigate, cfg.Sources, dispatcher, mem, llmClient)
+		return investigate.NewWithTools(cfg.Investigate, cfg.Sources, discoveredTools, dispatcher, mem, llmClient)
 	}
 
 	// Build the action executor.
