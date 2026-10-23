@@ -60,8 +60,24 @@ func openAITools(tools []Tool) []OpenAITool {
 	return out
 }
 
-// toolSchemas is the canonical tool list exposed to the LLM.
-// The executor validates every call against this list before dispatch.
+// memoryRecallTool is always available locally regardless of MCP server configuration.
+var memoryRecallTool = Tool{
+	Name:        "memory_recall",
+	Description: "Recall past investigations for a workload from the agent's long-term memory (SQLite). Returns previous root causes and actions taken.",
+	InputSchema: mustJSON(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"workload":  map[string]any{"type": "string"},
+			"namespace": map[string]any{"type": "string"},
+			"limit":     map[string]any{"type": "integer", "description": "default 5"},
+		},
+		"required": []string{"workload"},
+	}),
+}
+
+// toolSchemas is the built-in tool list used when no dynamic tools are discovered.
+// When the Dispatcher discovers real MCP server tools via tools/list, use NewWithTools
+// instead of NewWithSources so the LLM sees the actual available tool names.
 var toolSchemas = []Tool{
 	{
 		Name:        "k8s_describe",

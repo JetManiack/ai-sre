@@ -4,46 +4,43 @@
 state: /var/lib/ai-sre/state.db
 
 # MCP servers the agent may call as tools during investigation.
-# The dispatcher auto-discovers available tools from each server via tools/list
-# unless you specify an explicit `tools:` list.
+# Tools are auto-discovered via tools/list at startup — no hardcoding needed.
+# Stateful servers (e.g. mcp-victoriametrics) receive an initialize handshake
+# automatically; the session ID is then used on every subsequent call.
 mcp_servers:
-  - name: incident-io
-    url: http://mcp-incident-io:8080
-    token: ""          # set via AISRE_MCP_INCIDENT_IO_TOKEN env or secret mount
-    # tools: []        # empty = all tools from this server
+  # Read-only Kubernetes access.
+  - name: k8s
+    url: http://kubernetes-mcp-ro.kubernetes-mcp.svc:8080
+    token: ""  # no auth in-cluster; NetworkPolicy controls access
 
-  - name: loki
-    url: http://mcp-loki:8080
+  # VictoriaMetrics metrics (stateful — requires MCP session).
+  - name: metrics
+    url: http://mcp-victoriametrics.monitoring.svc:8080
     token: ""
-    tools: [logs_query]
 
-  - name: thanos
-    url: http://mcp-thanos:8080
-    token: ""
-    tools: [metrics_query]
+  # VictoriaLogs (when mcp-victorialogs is deployed).
+  # - name: logs
+  #   url: http://mcp-victorialogs.monitoring.svc:8080
+  #   token: ""
 
-# Sources for the observer adapters (log/metrics polling for anomaly detection).
-# Different from mcp_servers: sources are polled by the observer, not called by the agent.
-sources:
-  - name: loki
-    kind: loki
-    url: http://loki:3100
-    token: ""
+# Sources list is used by the observer's log-pattern adapter for direct polling.
+# It is separate from mcp_servers and does not affect the agent's tool list.
+sources: []
 
 investigate:
   enabled: true
-  base_url: http://vllm:8000/v1    # OpenAI-compatible endpoint
-  api_key: ""                        # set via AISRE_APIKEY or secret mount
-  model: google/gemma-4-26b-a4b-qat # or any OpenAI-compatible model
+  base_url: http://vllm:8000/v1    # OpenAI-compatible endpoint (or LM Studio for dev)
+  api_key: ""                        # set via secret mount
+  model: google/gemma-4-26b-a4b-it
   max_steps: 8
   max_tokens_step: 512
-  max_tokens_final: 4096
+  max_tokens_final: 1200
   step_timeout: 120s
   total_timeout: 600s
-  concurrency: 1                     # max simultaneous investigations
+  concurrency: 1
   system_prompt: |
-    Site context: production Kubernetes cluster.
-    Escalate code bugs to on-call-dev, infra issues to on-call-ops.
+    Site context: production Kubernetes cluster on mnc.
+    Escalate code bugs to on-call-dev, infra decisions to on-call-ops.
 
 observer:
   interval: 60s
@@ -62,17 +59,14 @@ actions:
   allow_rollout_restart: false
   allow_scale: false
   allow_systemd_restart: false
-  # k8s_write_url: http://mcp-k8s-write:8080   # uncomment to enable k8s write actions
-  # k8s_write_token: ""
 
 sinks:
   stdout_json: true
   board:
     enabled: false
-    url: ""            # http://mcp-board:8080
+    url: ""
     token: ""
     min_severity: high
-    # thread_id: ""    # pin all escalations to one thread; empty = new thread per workload
   webhook:
     enabled: false
     url: ""

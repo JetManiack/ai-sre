@@ -55,6 +55,7 @@ type PastInvestigation struct {
 type Agent struct {
 	cfg        config.InvestigateConfig
 	sources    []config.Source // for system prompt
+	tools      []Tool          // dynamic tool list from dispatcher; nil = use toolSchemas
 	dispatcher ToolDispatcher
 	memory     MemoryStore
 	llm        llmClient
@@ -65,14 +66,32 @@ type llmClient interface {
 	ChatCompletionWithTools(ctx context.Context, req ChatRequest) (ChatResponse, error)
 }
 
-// New creates an Agent.
+// New creates an Agent using the built-in toolSchemas.
 func New(cfg config.InvestigateConfig, dispatcher ToolDispatcher, memory MemoryStore, llm llmClient) *Agent {
 	return &Agent{cfg: cfg, dispatcher: dispatcher, memory: memory, llm: llm}
 }
 
-// NewWithSources creates an Agent with source list for the system prompt.
+// NewWithSources creates an Agent with source list for the system prompt and the built-in toolSchemas.
 func NewWithSources(cfg config.InvestigateConfig, sources []config.Source, dispatcher ToolDispatcher, memory MemoryStore, llm llmClient) *Agent {
 	return &Agent{cfg: cfg, sources: sources, dispatcher: dispatcher, memory: memory, llm: llm}
+}
+
+// NewWithTools creates an Agent with a dynamic tool list (from dispatcher discovery).
+// Use this when the dispatcher has called tools/list and knows the real tool names.
+// memory_recall is always added as a local tool even if not in tools.
+func NewWithTools(cfg config.InvestigateConfig, sources []config.Source, tools []Tool, dispatcher ToolDispatcher, memory MemoryStore, llm llmClient) *Agent {
+	// Always include memory_recall locally.
+	hasMemory := false
+	for _, t := range tools {
+		if t.Name == "memory_recall" {
+			hasMemory = true
+			break
+		}
+	}
+	if !hasMemory {
+		tools = append([]Tool{memoryRecallTool}, tools...)
+	}
+	return &Agent{cfg: cfg, sources: sources, tools: tools, dispatcher: dispatcher, memory: memory, llm: llm}
 }
 
 // Investigate runs the full investigator+decision loop for a candidate.
@@ -108,7 +127,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Decision 
 			req.MaxTokens = a.cfg.MaxTokensFinal
 		} else {
 			// Tool step: tools only, no schema (vLLM guided decoding skips tool calls otherwise).
-			req.Tools = openAITools(toolSchemas)
+			req.Tools = openAITools(a.activeTools())
 			req.MaxTokens = a.cfg.MaxTokensStep
 		}
 
@@ -270,6 +289,15 @@ func (a *Agent) userPrompt(c observer.Candidate) string {
 	return buf.String()
 }
 
+// activeTools returns the tool list to offer the LLM.
+// If the agent was created with a dynamic tool list, use that; otherwise fall back to built-ins.
+func (a *Agent) activeTools() []Tool {
+	if len(a.tools) > 0 {
+		return a.tools
+	}
+	return toolSchemas
+}
+
 func parseDecision(content string) (Decision, error) {
 	content = strings.TrimSpace(content)
 	// Strip markdown fences if the model wrapped the JSON.
@@ -286,6 +314,16 @@ func parseDecision(content string) (Decision, error) {
 	}
 	var d Decision
 	if err := json.Unmarshal([]byte(content), &d); err != nil {
+		// If parsing fails, try truncating at the last closing brace — the model
+		// may have emitted garbage after the JSON (repetition loops, thought tags).
+		if idx := strings.LastIndex(content, "}"); idx > 0 {
+			if err2 := json.Unmarshal([]byte(content[:idx+1]), &d); err2 == nil {
+				if d.Action == "" {
+					d.Action = ActionEscalate
+				}
+				return d, nil
+			}
+		}
 		return Decision{}, err
 	}
 	if d.Action == "" {

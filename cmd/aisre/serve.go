@@ -50,8 +50,13 @@ func runServe(ctx context.Context, cmd *cli.Command) error {
 	// Build the LLM client.
 	llmClient := investigate.NewOpenAIClient(cfg.Investigate.BaseURL, cfg.Investigate.APIKey)
 
-	// Build the investigator agent factory.
+	// Discover tools from MCP servers and build the agent factory.
+	// If no MCP servers advertised tools, fall back to built-in toolSchemas.
+	discoveredTools := dispatcher.DiscoveredTools()
 	newAgent := func() *investigate.Agent {
+		if len(discoveredTools) > 0 {
+			return investigate.NewWithTools(cfg.Investigate, cfg.Sources, discoveredTools, dispatcher, mem, llmClient)
+		}
 		return investigate.NewWithSources(cfg.Investigate, cfg.Sources, dispatcher, mem, llmClient)
 	}
 
