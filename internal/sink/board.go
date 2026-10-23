@@ -76,7 +76,7 @@ func (c *boardMCPClient) initialize(ctx context.Context) error {
 	}
 	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
 		c.setSession(sid)
-		slog.Info("board sink: session initialized", "session", sid)
+		slog.Info("board sink: session initialized", "session_len", len(sid))
 	}
 	return nil
 }
@@ -118,7 +118,7 @@ func (c *boardMCPClient) call(ctx context.Context, tool string, args map[string]
 	}
 	out, err := c.callOnce(ctx, tool, args)
 	if err != nil && isBoardSessionError(err) {
-		slog.Info("board sink: session error, re-initializing", "err", err)
+		slog.Info("board sink: session error, re-initializing")
 		if initErr := c.initialize(ctx); initErr != nil {
 			return "", initErr
 		}
