@@ -198,19 +198,19 @@ func (d *Dispatcher) Dispatch(_ context.Context, call investigate.ToolCall) (str
 	return "", fmt.Errorf("replay: no response for tool=%q input=%s", call.Name, call.Input)
 }
 
-// CheckExpected validates a Decision against an ExpectedOutcome.
+// CheckExpected validates an InvestigationResult against an ExpectedOutcome.
 // Returns a non-nil error describing the first failed assertion.
 // For root_cause_* checks the search corpus is root_cause_ru + escalate_message
 // so that models which embed the diagnosis in the escalation text still pass.
-func CheckExpected(exp ExpectedOutcome, d investigate.Decision) error {
-	if d.Action != exp.Action {
-		return fmt.Errorf("action: got %q, want %q", d.Action, exp.Action)
+func CheckExpected(exp ExpectedOutcome, r investigate.InvestigationResult) error {
+	if r.RecommendedAction != exp.Action {
+		return fmt.Errorf("action: got %q, want %q", r.RecommendedAction, exp.Action)
 	}
-	if d.Confidence < exp.ConfidenceMin {
-		return fmt.Errorf("confidence: got %.2f, want >= %.2f", d.Confidence, exp.ConfidenceMin)
+	if r.Confidence < exp.ConfidenceMin {
+		return fmt.Errorf("confidence: got %.2f, want >= %.2f", r.Confidence, exp.ConfidenceMin)
 	}
 	// Search both root_cause_ru and escalate_message for diagnostic substrings.
-	corpus := strings.ToLower(d.RootCauseRU + " " + d.EscalateMessage)
+	corpus := strings.ToLower(r.RootCauseRU + " " + r.EscalateMessage)
 	if len(exp.RootCauseContains) > 0 {
 		matched := false
 		for _, substr := range exp.RootCauseContains {

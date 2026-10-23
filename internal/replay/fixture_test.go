@@ -167,8 +167,8 @@ func TestCheckExpected(t *testing.T) {
 		RootCauseContainsAll: []string{"ModelNotMapped", "litellm"},
 	}
 
-	dec := func(action investigate.ActionKind, confidence float64, rootCause, escalateMsg string) investigate.Decision {
-		return investigate.Decision{Action: action, Confidence: confidence, RootCauseRU: rootCause, EscalateMessage: escalateMsg}
+	dec := func(action investigate.ActionKind, confidence float64, rootCause, escalateMsg string) investigate.InvestigationResult {
+		return investigate.InvestigationResult{RecommendedAction: action, Confidence: confidence, RootCauseRU: rootCause, EscalateMessage: escalateMsg}
 	}
 	// happy path
 	if err := CheckExpected(exp, dec("escalate", 0.9, "ModelNotMapped error in litellm alias config", "")); err != nil {

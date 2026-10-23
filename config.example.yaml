@@ -52,6 +52,12 @@ observer:
     - connection refused
     - ModelNotMappedError
     - "No api key passed"
+  # Grafana/Alertmanager webhook receiver.
+  # Configure Grafana to POST alerts to http://<pod>:8081/webhook.
+  alert_webhook:
+    enabled: false
+    addr: ":8081"
+    token: ""   # optional bearer token
 
 actions:
   # All false by default — escalate-only mode.

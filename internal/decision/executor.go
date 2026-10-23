@@ -46,11 +46,11 @@ func NewExecutor(cfg config.ActionsConfig, k8sWriteURL, k8sWriteToken string) *E
 	return e
 }
 
-// Execute validates and runs the action in d. Returns nil if the action was
+// Execute validates and runs the action in inv. Returns nil if the action was
 // executed (or is escalate-only). Returns an error if the action is not in the
 // allowlist or execution failed.
-func (e *Executor) Execute(ctx context.Context, d investigate.Decision) error {
-	switch d.Action {
+func (e *Executor) Execute(ctx context.Context, inv investigate.InvestigationResult) error {
+	switch inv.RecommendedAction {
 	case investigate.ActionEscalate:
 		// Escalate is always permitted — handled by the sink, not here.
 		return nil
@@ -58,25 +58,25 @@ func (e *Executor) Execute(ctx context.Context, d investigate.Decision) error {
 		if !e.cfg.AllowPodRestart {
 			return fmt.Errorf("pod_restart not in allowlist")
 		}
-		return e.podRestart(ctx, d.ActionNamespace, d.ActionTarget)
+		return e.podRestart(ctx, inv.ActionNamespace, inv.ActionTarget)
 	case investigate.ActionRolloutRestart:
 		if !e.cfg.AllowRolloutRestart {
 			return fmt.Errorf("rollout_restart not in allowlist")
 		}
-		return e.rolloutRestart(ctx, d.ActionNamespace, d.ActionTarget)
+		return e.rolloutRestart(ctx, inv.ActionNamespace, inv.ActionTarget)
 	case investigate.ActionScale:
 		if !e.cfg.AllowScale {
 			return fmt.Errorf("scale not in allowlist")
 		}
-		// ActionTarget encodes "name:replicas" to keep Decision schema simple.
-		return e.scale(ctx, d.ActionNamespace, d.ActionTarget)
+		// ActionTarget encodes "name:replicas" to keep InvestigationResult schema simple.
+		return e.scale(ctx, inv.ActionNamespace, inv.ActionTarget)
 	case investigate.ActionSystemdRestart:
 		if !e.cfg.AllowSystemdRestart {
 			return fmt.Errorf("systemd_restart not in allowlist")
 		}
-		return e.systemdRestart(ctx, d.ActionTarget)
+		return e.systemdRestart(ctx, inv.ActionTarget)
 	default:
-		return fmt.Errorf("unknown action kind: %q", d.Action)
+		return fmt.Errorf("unknown action kind: %q", inv.RecommendedAction)
 	}
 }
 

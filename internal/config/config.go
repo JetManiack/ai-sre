@@ -80,8 +80,20 @@ type ObserverConfig struct {
 	ErrorRateThresholdPct float64 `yaml:"error_rate_threshold_pct"`
 	// FailOpenPatterns are substrings in logs that always trigger a candidate.
 	FailOpenPatterns []string `yaml:"fail_open_patterns"`
+	// AlertWebhook configures an HTTP receiver for Grafana/Alertmanager webhooks.
+	AlertWebhook AlertWebhookConfig `yaml:"alert_webhook"`
 	// Workloads is a per-workload configuration overlay (probes, known-benign, etc.).
 	Workloads []WorkloadConfig `yaml:"workloads"`
+}
+
+// AlertWebhookConfig configures the Grafana/Alertmanager webhook receiver.
+type AlertWebhookConfig struct {
+	// Enabled starts the HTTP receiver when true.
+	Enabled bool `yaml:"enabled"`
+	// Addr is the listen address (default ":8081").
+	Addr string `yaml:"addr"`
+	// Token is an optional bearer token for incoming requests.
+	Token string `yaml:"token"`
 }
 
 // WorkloadConfig is a per-service observer overlay.

@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
 	"github.com/JetManiack/ai-sre/internal/config"
 	"github.com/JetManiack/ai-sre/internal/investigate"
+	"github.com/JetManiack/ai-sre/internal/observer"
 	"github.com/JetManiack/ai-sre/internal/replay"
 	"github.com/JetManiack/ai-sre/internal/state"
+	"github.com/JetManiack/ai-sre/internal/tools"
 )
 
 func investigateCmd() *cli.Command {
@@ -37,11 +40,64 @@ func investigateCmd() *cli.Command {
 			if name == "" {
 				return cli.Exit("workload name required", 1)
 			}
-			slog.Info("aisre: investigate", "workload", name, "namespace", cmd.String("namespace"))
-			// TODO: load config, build investigator, run one-shot investigation, print JSON result
-			return nil
+			return runLive(ctx, cmd, name)
 		},
 	}
+}
+
+// runLive performs a one-shot investigation against live MCP servers.
+// It builds a synthetic Candidate from the CLI flags and runs the full agent loop.
+func runLive(ctx context.Context, cmd *cli.Command, name string) error {
+	cfgPath := cmd.String("config")
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+	if !cfg.Investigate.Enabled {
+		return fmt.Errorf("investigate.enabled is false in config")
+	}
+
+	db, err := state.Open(cfg.State)
+	if err != nil {
+		return fmt.Errorf("state: %w", err)
+	}
+	defer db.Close()
+
+	mem := &stateMemory{db: db}
+	dispatcher, err := tools.NewDispatcher(ctx, cfg.MCPServers, mem)
+	if err != nil {
+		return fmt.Errorf("dispatcher: %w", err)
+	}
+	discoveredTools := dispatcher.DiscoveredTools()
+	if len(discoveredTools) == 0 {
+		return fmt.Errorf("no tools discovered from MCP servers; check mcp_servers config")
+	}
+
+	llmClient := investigate.NewOpenAIClient(cfg.Investigate.BaseURL, cfg.Investigate.APIKey)
+	agent := investigate.NewWithTools(cfg.Investigate, cfg.Sources, discoveredTools, dispatcher, mem, llmClient)
+
+	c := observer.Candidate{
+		ID:         fmt.Sprintf("live-%d", time.Now().UnixNano()),
+		ObservedAt: time.Now(),
+		Kind:       observer.KindAlertWebhook,
+		Severity:   observer.SeverityHigh,
+		Workload: observer.Workload{
+			Kind:      cmd.String("kind"),
+			Name:      name,
+			Namespace: cmd.String("namespace"),
+			Source:    cmd.String("source"),
+		},
+		Summary:  fmt.Sprintf("manual investigation: %s/%s", cmd.String("namespace"), name),
+		Evidence: []string{},
+	}
+	slog.Info("aisre: live investigate", "workload", name, "namespace", c.Workload.Namespace,
+		"tools", len(discoveredTools))
+
+	result := agent.Investigate(ctx, c)
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
 }
 
 func runReplay(ctx context.Context, cmd *cli.Command, dir string) error {
@@ -70,7 +126,7 @@ func runReplay(ctx context.Context, cmd *cli.Command, dir string) error {
 	mem := &stateMemory{db: db}
 	dispatcher := replay.NewDispatcher(f.Responses)
 	llmClient := investigate.NewOpenAIClient(cfg.Investigate.BaseURL, cfg.Investigate.APIKey)
-	agent := investigate.NewWithSources(cfg.Investigate, cfg.Sources, dispatcher, mem, llmClient)
+	agent := investigate.New(cfg.Investigate, dispatcher, mem, llmClient)
 
 	result := agent.Investigate(ctx, f.Candidate)
 
@@ -86,7 +142,7 @@ func runReplay(ctx context.Context, cmd *cli.Command, dir string) error {
 		fmt.Fprintf(os.Stderr, "ASSERTION FAILED: %v\n", err)
 		os.Exit(2)
 	}
-	slog.Info("aisre: replay OK", "action", result.Action, "confidence", result.Confidence)
+	slog.Info("aisre: replay OK", "action", result.RecommendedAction, "confidence", result.Confidence)
 	return nil
 }
 

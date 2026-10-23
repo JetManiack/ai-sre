@@ -20,10 +20,10 @@ func (noopMemory) RecallInvestigations(_, _ string, _ int) ([]investigate.PastIn
 }
 func (noopMemory) SaveInvestigation(_ investigate.PastInvestigation) error { return nil }
 
-// mockLLM drives the agent toward a specific Decision without a real LLM.
+// mockLLM drives the agent toward a specific InvestigationResult without a real LLM.
 type mockLLM struct {
 	toolSequence  []func(msgs []investigate.Message) investigate.ChatResponse
-	finalDecision investigate.Decision
+	finalDecision investigate.InvestigationResult
 	step          int
 }
 
@@ -75,14 +75,14 @@ func runFixtureTest(t *testing.T, fixtureDir string) {
 	}
 
 	d := replay.NewDispatcher(f.Responses)
-	decision := investigate.Decision{
-		RootCauseRU:     buildSyntheticRootCause(f),
-		Evidence:        f.Candidate.Evidence,
-		Confidence:      0.85,
-		SuggestedFixRU:  "Проверьте конфигурацию и откатите изменения.",
-		Action:          f.Expected.Action,
-		EscalateTo:      "on-call-ops",
-		EscalateMessage: "Синтетическое сообщение эскалации.",
+	decision := investigate.InvestigationResult{
+		RootCauseRU:       buildSyntheticRootCause(f),
+		Evidence:          f.Candidate.Evidence,
+		Confidence:        0.85,
+		SuggestedFixRU:    "Проверьте конфигурацию и откатите изменения.",
+		RecommendedAction: f.Expected.Action,
+		EscalateTo:        "on-call-ops",
+		EscalateMessage:   "Синтетическое сообщение эскалации.",
 	}
 
 	llm := &mockLLM{

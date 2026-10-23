@@ -1,4 +1,4 @@
-// Package sink sends investigation decisions to configured output channels.
+// Package sink sends incident reports to configured output channels.
 package sink
 
 import (
@@ -14,9 +14,17 @@ import (
 	"github.com/JetManiack/ai-sre/internal/observer"
 )
 
-// Sink sends a Decision to an output channel.
+// IncidentReport is the full output of one investigation+fix cycle.
+type IncidentReport struct {
+	Candidate   observer.Candidate
+	Investigation investigate.InvestigationResult
+	// Fix is nil when the recommended action was escalate (no execution).
+	Fix *investigate.FixResult
+}
+
+// Sink sends an IncidentReport to an output channel.
 type Sink interface {
-	Send(ctx context.Context, c observer.Candidate, d investigate.Decision) error
+	Send(ctx context.Context, r IncidentReport) error
 }
 
 // Multi fans out to multiple sinks. Errors are logged but don't abort others.
@@ -26,10 +34,10 @@ type Multi struct {
 
 func NewMulti(sinks ...Sink) *Multi { return &Multi{sinks: sinks} }
 
-func (m *Multi) Send(ctx context.Context, c observer.Candidate, d investigate.Decision) error {
+func (m *Multi) Send(ctx context.Context, r IncidentReport) error {
 	var errs []string
 	for _, s := range m.sinks {
-		if err := s.Send(ctx, c, d); err != nil {
+		if err := s.Send(ctx, r); err != nil {
 			slog.Warn("sink: send error", "err", err)
 			errs = append(errs, err.Error())
 		}
@@ -40,26 +48,32 @@ func (m *Multi) Send(ctx context.Context, c observer.Candidate, d investigate.De
 	return nil
 }
 
-// StdoutJSON writes the decision as a JSON line to stdout.
+// StdoutJSON writes the report as a JSON line to stdout.
 type StdoutJSON struct{}
 
-func (s StdoutJSON) Send(_ context.Context, c observer.Candidate, d investigate.Decision) error {
+func (s StdoutJSON) Send(_ context.Context, r IncidentReport) error {
+	inv := r.Investigation
 	out := map[string]any{
-		"workload":   c.Workload.Name,
-		"namespace":  c.Workload.Namespace,
-		"kind":       c.Kind,
-		"severity":   c.Severity,
-		"action":     d.Action,
-		"confidence": d.Confidence,
-		"root_cause": d.RootCauseRU,
-		"suggested":  d.SuggestedFixRU,
+		"workload":   r.Candidate.Workload.Name,
+		"namespace":  r.Candidate.Workload.Namespace,
+		"kind":       r.Candidate.Kind,
+		"severity":   r.Candidate.Severity,
+		"action":     inv.RecommendedAction,
+		"confidence": inv.Confidence,
+		"root_cause": inv.RootCauseRU,
+		"suggested":  inv.SuggestedFixRU,
+	}
+	if r.Fix != nil {
+		out["fix_success"] = r.Fix.Success
+		out["fix_verification"] = r.Fix.VerificationRU
 	}
 	b, _ := json.Marshal(out)
 	_, err := fmt.Fprintf(os.Stdout, "%s\n", b)
 	return err
 }
 
-// BoardSink posts escalations to the coordination board via MCP HTTP.
+// BoardSink posts to the coordination board via MCP HTTP.
+// Posts when: recommended_action=escalate OR fix failed.
 type BoardSink struct {
 	client *boardMCPClient
 	cfg    config.BoardSinkConfig
@@ -72,46 +86,57 @@ func NewBoardSink(cfg config.BoardSinkConfig) *BoardSink {
 	}
 }
 
-func (s *BoardSink) Send(ctx context.Context, c observer.Candidate, d investigate.Decision) error {
-	if d.Action != investigate.ActionEscalate {
-		return nil // only escalations go to board
+func (s *BoardSink) Send(ctx context.Context, r IncidentReport) error {
+	inv := r.Investigation
+	shouldPost := inv.RecommendedAction == investigate.ActionEscalate ||
+		(r.Fix != nil && !r.Fix.Success)
+	if !shouldPost {
+		return nil
 	}
 	if s.cfg.URL == "" {
 		slog.Warn("sink: board URL not configured, skipping escalation")
 		return nil
 	}
 
-	sev := string(c.Severity)
+	sev := string(r.Candidate.Severity)
 	if minSev := s.cfg.MinSeverity; minSev != "" && severityBelow(sev, minSev) {
 		return nil
 	}
 
-	body := d.EscalateMessage
-	if body == "" {
-		body = fmt.Sprintf("🚨 %s/%s: %s\n\nPричина: %s\n\nРекомендация: %s",
-			c.Workload.Namespace, c.Workload.Name,
-			c.Summary, d.RootCauseRU, d.SuggestedFixRU)
+	body := inv.EscalateMessage
+	if r.Fix != nil && !r.Fix.Success {
+		body = r.Fix.EscalateMessage
+		if body == "" {
+			body = fmt.Sprintf("⚠️ %s/%s: действие %s не решило проблему.\n\nПричина: %s\n\nПроверка: %s",
+				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
+				r.Fix.ActionTaken, inv.RootCauseRU, r.Fix.VerificationRU)
+		}
 	}
-	// Add @mention if configured.
-	if d.EscalateTo != "" {
-		body = fmt.Sprintf("@%s %s", d.EscalateTo, body)
+	if body == "" {
+		body = fmt.Sprintf("🚨 %s/%s: %s\n\nПричина: %s\n\nРекомендация: %s",
+			r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
+			r.Candidate.Summary, inv.RootCauseRU, inv.SuggestedFixRU)
+	}
+	// Add @mention if the agent specified one.
+	if inv.EscalateTo != "" {
+		body = fmt.Sprintf("@%s %s", inv.EscalateTo, body)
 	}
 
 	threadID := s.cfg.ThreadID
 	if threadID == "" {
-		// Create a new thread per workload.
-		title := fmt.Sprintf("[ai-sre] %s/%s %s", c.Workload.Namespace, c.Workload.Name, c.Kind)
+		title := fmt.Sprintf("[ai-sre] %s/%s %s", r.Candidate.Workload.Namespace, r.Candidate.Workload.Name, r.Candidate.Kind)
 		tid, err := s.client.createThread(ctx, title, body)
 		if err != nil {
 			return fmt.Errorf("board sink: create thread: %w", err)
 		}
-		slog.Info("sink: board thread created", "thread_id", tid, "workload", c.Workload.Name)
+		slog.Info("sink: board thread created", "thread_id", tid, "workload", r.Candidate.Workload.Name)
 		return nil
 	}
 	return s.client.reply(ctx, threadID, body)
 }
 
 // WebhookSink POST-s a JSON payload to a generic HTTP endpoint.
+// Always posts the full report.
 type WebhookSink struct {
 	client *webhookClient
 }
@@ -120,19 +145,25 @@ func NewWebhookSink(cfg config.WebhookConfig) *WebhookSink {
 	return &WebhookSink{client: newWebhookClient(cfg.URL, cfg.Token)}
 }
 
-func (s *WebhookSink) Send(ctx context.Context, c observer.Candidate, d investigate.Decision) error {
+func (s *WebhookSink) Send(ctx context.Context, r IncidentReport) error {
+	inv := r.Investigation
 	payload := map[string]any{
-		"workload":         c.Workload.Name,
-		"namespace":        c.Workload.Namespace,
-		"kind":             string(c.Kind),
-		"severity":         string(c.Severity),
-		"action":           string(d.Action),
-		"confidence":       d.Confidence,
-		"root_cause_ru":    d.RootCauseRU,
-		"suggested_fix_ru": d.SuggestedFixRU,
-		"evidence":         d.Evidence,
-		"escalate_to":      d.EscalateTo,
-		"escalate_message": d.EscalateMessage,
+		"workload":         r.Candidate.Workload.Name,
+		"namespace":        r.Candidate.Workload.Namespace,
+		"kind":             string(r.Candidate.Kind),
+		"severity":         string(r.Candidate.Severity),
+		"action":           string(inv.RecommendedAction),
+		"confidence":       inv.Confidence,
+		"root_cause_ru":    inv.RootCauseRU,
+		"suggested_fix_ru": inv.SuggestedFixRU,
+		"evidence":         inv.Evidence,
+		"escalate_to":      inv.EscalateTo,
+		"escalate_message": inv.EscalateMessage,
+	}
+	if r.Fix != nil {
+		payload["fix_action"] = string(r.Fix.ActionTaken)
+		payload["fix_success"] = r.Fix.Success
+		payload["fix_verification_ru"] = r.Fix.VerificationRU
 	}
 	return s.client.post(ctx, payload)
 }
@@ -156,7 +187,6 @@ func Build(cfg config.SinksConfig) Sink {
 		sinks = append(sinks, NewWebhookSink(cfg.Webhook))
 	}
 	if len(sinks) == 0 {
-		// Always log to stdout by default.
 		sinks = append(sinks, StdoutJSON{})
 	}
 	return NewMulti(sinks...)
