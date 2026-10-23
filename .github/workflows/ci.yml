@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/jeton-call-ops/ai-sre
+  IMAGE: ghcr.io/jetmaniack/ai-sre
 
 jobs:
   test:
