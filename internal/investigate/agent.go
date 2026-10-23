@@ -251,8 +251,10 @@ Rules:
 - Call one or two tools per step; think before each call.
 - When confident (or at step 7), produce your final JSON answer.
 - confidence: a float between 0.0 and 1.0 reflecting how certain you are of the root cause. MUST be > 0 if you have evidence. Use 0.9–1.0 for clear evidence, 0.7–0.9 for probable, 0.5–0.7 for uncertain.
+- root_cause_ru: ALWAYS fill this — one sentence summary of the root cause in Russian. Required even when action=escalate.
+- suggested_fix_ru: ALWAYS fill this — one sentence on the recommended fix in Russian. Required even when action=escalate.
 - recommended_action: "escalate" posts to the board; other actions execute only if in the allowlist.
-- escalate_message: brief board post in Russian (3–5 sentences): root cause, key evidence, specific fix. No repetition.
+- escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well.
 - escalate_to: "on-call-dev" for code bugs, "on-call-ops" for operator/infra decisions.
 - For tools requiring time range: use current time as end, subtract window for start (RFC3339 format).
 {{- if .SystemPrompt}}
@@ -327,6 +329,19 @@ func parseResult(content string) (InvestigationResult, error) {
 	}
 	if r.RecommendedAction == "" {
 		r.RecommendedAction = ActionEscalate
+	}
+	// Gemma-4 sometimes puts all text into escalate_message and leaves
+	// root_cause_ru/suggested_fix_ru empty. Fall back to the first sentence of
+	// escalate_message so memory_recall and the board sink have something useful.
+	if r.RootCauseRU == "" && r.EscalateMessage != "" {
+		if idx := strings.IndexAny(r.EscalateMessage, ".!?\n"); idx >= 0 {
+			r.RootCauseRU = strings.TrimSpace(r.EscalateMessage[:idx+1])
+		} else {
+			r.RootCauseRU = r.EscalateMessage
+		}
+	}
+	if r.SuggestedFixRU == "" && r.EscalateMessage != "" {
+		r.SuggestedFixRU = "См. escalate_message."
 	}
 	// Gemma-4 consistently omits confidence even when it has clear evidence.
 	// Apply a safe default ONLY for escalate (board post, no execution risk).
