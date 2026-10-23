@@ -328,6 +328,12 @@ func parseResult(content string) (InvestigationResult, error) {
 	if r.RecommendedAction == "" {
 		r.RecommendedAction = ActionEscalate
 	}
+	// Gemma-4 consistently omits confidence even when it has clear evidence.
+	// Apply a conservative default so Phase 2 is not permanently blocked.
+	if r.Confidence == 0 && r.RootCauseRU != "" && len(r.Evidence) > 0 {
+		r.Confidence = 0.75
+		slog.Info("investigate: confidence was 0 with non-empty result, applying default", "default", 0.75)
+	}
 	return r, nil
 }
 
