@@ -151,6 +151,13 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 					)
 					return failedResult(c, fmt.Sprintf("parse failed: %v", err))
 				}
+				slog.Info("investigate: parsed result",
+					"step", step,
+					"action", r.RecommendedAction,
+					"confidence", r.Confidence,
+					"root_cause_len", len(r.RootCauseRU),
+					"finish_reason", resp.FinishReason,
+				)
 				r = clampResult(r, c)
 				_ = a.memory.SaveInvestigation(PastInvestigation{
 					ID:            c.ID + "-" + fmt.Sprint(time.Now().UnixNano()),
@@ -243,6 +250,7 @@ Rules:
 - Never read secrets. Never write or modify anything.
 - Call one or two tools per step; think before each call.
 - When confident (or at step 7), produce your final JSON answer.
+- confidence: a float between 0.0 and 1.0 reflecting how certain you are of the root cause. MUST be > 0 if you have evidence. Use 0.9–1.0 for clear evidence, 0.7–0.9 for probable, 0.5–0.7 for uncertain.
 - recommended_action: "escalate" posts to the board; other actions execute only if in the allowlist.
 - escalate_message: brief board post in Russian (3–5 sentences): root cause, key evidence, specific fix. No repetition.
 - escalate_to: "on-call-dev" for code bugs, "on-call-ops" for operator/infra decisions.
