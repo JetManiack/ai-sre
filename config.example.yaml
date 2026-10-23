@@ -29,8 +29,8 @@ sources: []
 
 investigate:
   enabled: true
-  base_url: http://vllm:8000/v1    # OpenAI-compatible endpoint (or LM Studio for dev)
-  api_key: ""                        # set via secret mount
+  base_url: http://llm-gateway:8000/v1  # OpenAI-compatible endpoint (or LM Studio for dev)
+  api_key: ""                            # set via secret mount
   model: google/gemma-4-26b-a4b-it
   max_steps: 8
   max_tokens_step: 512
@@ -38,9 +38,13 @@ investigate:
   step_timeout: 120s
   total_timeout: 600s
   concurrency: 1
+  # Board actor to escalate application/code bugs to. Default: on-call-dev.
+  escalate_to_code_bugs: "on-call-dev"
+  # Board actor to escalate operator/infra decisions to. Default: on-call-ops.
+  escalate_to_infra: "on-call-ops"
+  # Optional site context prepended to the system prompt.
   system_prompt: |
-    Site context: production Kubernetes cluster on mnc.
-    Escalate code bugs to on-call-dev, infra decisions to on-call-ops.
+    Site context: production Kubernetes cluster.
 
 observer:
   interval: 60s

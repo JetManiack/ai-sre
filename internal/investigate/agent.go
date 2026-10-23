@@ -131,12 +131,12 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 					"completion_tokens", resp.Usage.CompletionTokens,
 				)
 				if resp.FinishReason == "length" {
-					return failedResult(c, "final response truncated by max_tokens (context too large)")
+					return a.failedResult(c, "final response truncated by max_tokens (context too large)")
 				}
 				if resp.ReasoningContent != "" {
-					return failedResult(c, "model returned only reasoning_content with empty content (enable_thinking may be on)")
+					return a.failedResult(c, "model returned only reasoning_content with empty content (enable_thinking may be on)")
 				}
-				return failedResult(c, "empty final response")
+				return a.failedResult(c, "empty final response")
 			}
 			if resp.Content != "" {
 				r, err := parseResult(resp.Content)
@@ -149,7 +149,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 						"prompt_tokens", resp.Usage.PromptTokens,
 						"completion_tokens", resp.Usage.CompletionTokens,
 					)
-					return failedResult(c, fmt.Sprintf("parse failed: %v", err))
+					return a.failedResult(c, fmt.Sprintf("parse failed: %v", err))
 				}
 				slog.Info("investigate: parsed result",
 					"step", step,
@@ -225,7 +225,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 	if lastErr != nil {
 		reason = lastErr.Error()
 	}
-	return failedResult(c, reason)
+	return a.failedResult(c, reason)
 }
 
 var systemPromptTmpl = template.Must(template.New("sys").Parse(`You are an autonomous SRE agent performing Phase 1: investigation only.
@@ -378,14 +378,18 @@ func clampResult(r InvestigationResult, c observer.Candidate) InvestigationResul
 	return r
 }
 
-func failedResult(c observer.Candidate, reason string) InvestigationResult {
+func (a *Agent) failedResult(c observer.Candidate, reason string) InvestigationResult {
+	escalateTo := a.cfg.EscalateToInfra
+	if escalateTo == "" {
+		escalateTo = "on-call-ops"
+	}
 	return InvestigationResult{
 		RootCauseRU:       fmt.Sprintf("Расследование не завершено: %s", reason),
 		Evidence:          c.Evidence,
 		Confidence:        0,
 		SuggestedFixRU:    "Проверьте вручную.",
 		RecommendedAction: ActionEscalate,
-		EscalateTo:        "on-call-ops",
+		EscalateTo:        escalateTo,
 		EscalateMessage:   fmt.Sprintf("⚠️ Агент не смог завершить расследование для %s/%s (%s): %s\n\nПроверьте вручную.", c.Workload.Namespace, c.Workload.Name, c.Kind, reason),
 	}
 }
