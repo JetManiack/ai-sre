@@ -45,11 +45,20 @@ type ResponseFormat struct {
 	JSONSchema json.RawMessage `json:"json_schema,omitempty"`
 }
 
+// ChatUsage holds token counts from the completion response.
+type ChatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 // ChatResponse is the relevant subset of an OpenAI chat completions response.
 type ChatResponse struct {
-	Content      string
-	ToolCalls    []ToolCall
-	FinishReason string
+	Content          string
+	ReasoningContent string // non-empty when model used thinking (e.g. gemma-4 adaptive reasoning)
+	ToolCalls        []ToolCall
+	FinishReason     string
+	Usage            ChatUsage
 }
 
 // OpenAIClient is an OpenAI-compatible HTTP client.
@@ -99,11 +108,13 @@ func (c *OpenAIClient) ChatCompletionWithTools(ctx context.Context, req ChatRequ
 	var out struct {
 		Choices []struct {
 			Message struct {
-				Content   string        `json:"content"`
-				ToolCalls []RawToolCall `json:"tool_calls"`
+				Content          string        `json:"content"`
+				ReasoningContent string        `json:"reasoning_content"` // gemma-4 thinking
+				ToolCalls        []RawToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage ChatUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return ChatResponse{}, fmt.Errorf("llm: parse response: %w", err)
@@ -125,8 +136,10 @@ func (c *OpenAIClient) ChatCompletionWithTools(ctx context.Context, req ChatRequ
 	}
 
 	return ChatResponse{
-		Content:      ch.Message.Content,
-		ToolCalls:    toolCalls,
-		FinishReason: ch.FinishReason,
+		Content:          ch.Message.Content,
+		ReasoningContent: ch.Message.ReasoningContent,
+		ToolCalls:        toolCalls,
+		FinishReason:     ch.FinishReason,
+		Usage:            out.Usage,
 	}, nil
 }

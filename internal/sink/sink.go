@@ -113,9 +113,15 @@ func (s *BoardSink) Send(ctx context.Context, r IncidentReport) error {
 		}
 	}
 	if body == "" {
-		body = fmt.Sprintf("🚨 %s/%s: %s\n\nПричина: %s\n\nРекомендация: %s",
-			r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
-			r.Candidate.Summary, inv.RootCauseRU, inv.SuggestedFixRU)
+		// Detect a failed/empty investigation (confidence=0, empty fields).
+		if inv.Confidence == 0 && inv.RootCauseRU == "" {
+			body = fmt.Sprintf("⚠️ [ai-sre] расследование не завершено для %s/%s\n\nАлерт: %s\n\nПроверьте вручную — агент не смог сформировать ответ (пустое поле root_cause). Возможные причины: контекст превысил max_tokens, или модель вернула только reasoning_content. Смотрите логи пода ai-sre.",
+				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name, r.Candidate.Summary)
+		} else {
+			body = fmt.Sprintf("🚨 %s/%s: %s\n\nПричина: %s\n\nРекомендация: %s",
+				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
+				r.Candidate.Summary, inv.RootCauseRU, inv.SuggestedFixRU)
+		}
 	}
 	// Add @mention if the agent specified one.
 	if inv.EscalateTo != "" {

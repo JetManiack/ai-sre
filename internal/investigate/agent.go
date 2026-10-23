@@ -122,12 +122,33 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 
 		if forceFinal || resp.FinishReason == "stop" || resp.FinishReason == "end_turn" {
 			if resp.Content == "" && len(resp.ToolCalls) == 0 {
+				// Diagnostic: distinguish thinking-only responses from max_tokens truncation.
+				slog.Warn("investigate: empty final response",
+					"step", step,
+					"finish_reason", resp.FinishReason,
+					"reasoning_content_len", len(resp.ReasoningContent),
+					"prompt_tokens", resp.Usage.PromptTokens,
+					"completion_tokens", resp.Usage.CompletionTokens,
+				)
+				if resp.FinishReason == "length" {
+					return failedResult(c, "final response truncated by max_tokens (context too large)")
+				}
+				if resp.ReasoningContent != "" {
+					return failedResult(c, "model returned only reasoning_content with empty content (enable_thinking may be on)")
+				}
 				return failedResult(c, "empty final response")
 			}
 			if resp.Content != "" {
 				r, err := parseResult(resp.Content)
 				if err != nil {
-					slog.Warn("investigate: parse result failed", "err", err, "content", resp.Content)
+					slog.Warn("investigate: parse result failed",
+						"err", err,
+						"finish_reason", resp.FinishReason,
+						"content_len", len(resp.Content),
+						"content_preview", resp.Content[:min(len(resp.Content), 500)],
+						"prompt_tokens", resp.Usage.PromptTokens,
+						"completion_tokens", resp.Usage.CompletionTokens,
+					)
 					return failedResult(c, fmt.Sprintf("parse failed: %v", err))
 				}
 				r = clampResult(r, c)
@@ -208,8 +229,10 @@ Your job: investigate the anomaly deeply, find the ROOT CAUSE (not just the symp
 You do NOT execute anything — a separate executor handles that.
 
 Investigation strategy by alert kind:
-- OOMKilled / memory issues: ALWAYS check memory trend over time with query_range (e.g. last 6–24h). A one-time spike vs a steady leak require different fixes. Never recommend "raise the limit" without checking if memory grows monotonically.
-- Error rate spikes (5xx): Check logs for specific error messages, then check recent deployments/config changes.
+- OOMKilled / memory issues: ALWAYS check memory trend with query_range (last 6–24h). Distinguish:
+  (a) one-time spike → pod_restart may help; (b) growing monotonically → memory LEAK → escalate for profiling, do NOT scale or raise limit; (c) crash loop with fixed peak → raise limit or pod_restart.
+  scaling (horizontal) does NOT fix a memory leak — it just spreads it.
+- Error rate spikes (5xx): Check logs for specific error messages, then recent deployments/config changes.
 - CrashLoop: Check pod logs (previous container), then events, then resource limits.
 - General: start with memory_recall, then look at time-series before snapshots.
 
