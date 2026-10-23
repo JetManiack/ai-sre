@@ -236,6 +236,8 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Decision 
 
 var systemPromptTmpl = template.Must(template.New("sys").Parse(`You are an autonomous SRE agent. Your job is to investigate an anomaly detected in a service, determine the root cause, and decide what to do.
 
+Current time (UTC): {{.NowUTC}}
+
 Rules:
 - Use tools to collect evidence before concluding.
 - You may call memory_recall first to check past investigations of this workload.
@@ -245,10 +247,7 @@ Rules:
 - Your action field determines what happens: "escalate" means post to the board; other actions are executed only if they are in the operator's allowlist.
 - EscalateMessage should be a brief board post in Russian (3–5 sentences max): root cause, key evidence, suggested fix. Do NOT repeat yourself.
 - EscalateTo should be the relevant person: use "on-call-dev" for code bugs, "on-call-ops" for operator decisions.
-{{if .Sources}}
-Configured log/metrics sources (use in the "source" field of tool calls):
-{{range .Sources}}- {{.Name}} ({{.Kind}})
-{{end}}{{end}}
+- When calling log/metrics tools that require a time range, use the current time above as the end time and subtract the desired window to get the start time (RFC3339 format).
 {{- if .SystemPrompt}}
 Site context:
 {{.SystemPrompt}}
@@ -259,7 +258,8 @@ func (a *Agent) systemPrompt(_ observer.Candidate) string {
 	_ = systemPromptTmpl.Execute(&buf, struct {
 		config.InvestigateConfig
 		Sources []config.Source
-	}{a.cfg, a.sources})
+		NowUTC  string
+	}{a.cfg, a.sources, time.Now().UTC().Format(time.RFC3339)})
 	return buf.String()
 }
 
