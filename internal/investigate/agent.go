@@ -329,10 +329,13 @@ func parseResult(content string) (InvestigationResult, error) {
 		r.RecommendedAction = ActionEscalate
 	}
 	// Gemma-4 consistently omits confidence even when it has clear evidence.
-	// Apply a conservative default so Phase 2 is not permanently blocked.
-	if r.Confidence == 0 && r.RootCauseRU != "" && len(r.Evidence) > 0 {
+	// Apply a safe default ONLY for escalate (board post, no execution risk).
+	// Execution actions (pod_restart, rollout_restart, …) require the model
+	// to supply explicit confidence — missing confidence keeps them at escalate.
+	if r.Confidence == 0 && r.RootCauseRU != "" && len(r.Evidence) > 0 &&
+		(r.RecommendedAction == ActionEscalate || r.RecommendedAction == "") {
 		r.Confidence = 0.75
-		slog.Info("investigate: confidence was 0 with non-empty result, applying default", "default", 0.75)
+		slog.Info("investigate: confidence was 0 with non-empty escalate result, applying default", "default", 0.75)
 	}
 	return r, nil
 }
