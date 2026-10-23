@@ -255,7 +255,7 @@ Rules:
 - suggested_fix_ru: ALWAYS fill this — one sentence on the recommended fix in Russian. Required even when action=escalate.
 - recommended_action: "escalate" posts to the board; other actions execute only if in the allowlist.
 - escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well.
-- escalate_to: "on-call-dev" for code bugs, "on-call-ops" for operator/infra decisions.
+- escalate_to: "{{.EscalateToCodeBugs}}" for code bugs, "{{.EscalateToInfra}}" for operator/infra decisions.
 - For tools requiring time range: use current time as end, subtract window for start (RFC3339 format).
 {{- if .SystemPrompt}}
 Site context:
@@ -263,12 +263,19 @@ Site context:
 {{end}}`))
 
 func (a *Agent) systemPrompt(_ observer.Candidate) string {
+	cfg := a.cfg
+	if cfg.EscalateToCodeBugs == "" {
+		cfg.EscalateToCodeBugs = "on-call-dev"
+	}
+	if cfg.EscalateToInfra == "" {
+		cfg.EscalateToInfra = "on-call-ops"
+	}
 	var buf bytes.Buffer
 	_ = systemPromptTmpl.Execute(&buf, struct {
 		config.InvestigateConfig
 		Sources []config.Source
 		NowUTC  string
-	}{a.cfg, a.sources, time.Now().UTC().Format(time.RFC3339)})
+	}{cfg, a.sources, time.Now().UTC().Format(time.RFC3339)})
 	return buf.String()
 }
 

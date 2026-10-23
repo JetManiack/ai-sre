@@ -125,6 +125,13 @@ type InvestigateConfig struct {
 	// SystemPrompt is prepended to every investigation (site-specific context).
 	SystemPrompt string `yaml:"system_prompt"`
 
+	// EscalateToCodeBugs is the board actor to escalate to for application/code bugs.
+	// Defaults to "on-call-dev" if empty.
+	EscalateToCodeBugs string `yaml:"escalate_to_code_bugs"`
+	// EscalateToInfra is the board actor to escalate to for operator/infra decisions.
+	// Defaults to "on-call-ops" if empty.
+	EscalateToInfra string `yaml:"escalate_to_infra"`
+
 	MaxSteps       int           `yaml:"max_steps"`        // default 8
 	MaxContextTokens int         `yaml:"max_context_tokens"` // default 16000
 	MaxToolOutputTokens int      `yaml:"max_tool_output_tokens"` // default 1500
