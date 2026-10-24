@@ -268,7 +268,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			}
 
 			slog.Info("investigate: tool call", "step", step, "tool", tc.Name, "input", string(tc.Input))
-			out, err := a.dispatcher.Dispatch(ctx, ToolCall{Name: tc.Name, Input: tc.Input, WorkloadHint: c.Workload.Name})
+			out, err := a.dispatcher.Dispatch(ctx, ToolCall{Name: tc.Name, Input: tc.Input, WorkloadHint: c.Workload.Name, AlertHint: c.Summary})
 			if err != nil {
 				slog.Warn("investigate: tool dispatch error", "tool", tc.Name, "err", err)
 				out = fmt.Sprintf("[error: %v]", err)

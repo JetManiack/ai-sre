@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -16,15 +17,18 @@ func TestKbHitIsRelevant(t *testing.T) {
 		wl    string
 		want  bool
 	}{
-		// Correct query → upgrade article context has "lazily", "initialize", etc. → relevant.
+		// Correct query → context has "lazily", "initialize", "collection" → ≥2 matches → relevant.
 		{upgradeArticle, "Cannot lazily initialize collection of role", "keycloak", true},
-		// vllm failure case: stripped query "Keycloak components", SSO article context has "component"
-		// (singular) but not "components" (plural) → exact word absent → not relevant → no auto-fetch.
+		// vllm failure case: "Keycloak components" → only "component" (singular) in SSO context,
+		// "components" (plural) absent → 0 matches → not relevant. Even with ≥1 threshold this
+		// was fragile; ≥2 makes it robust to coincidental single-word hits.
 		{ssoArticle, "Keycloak components", "keycloak", false},
 		// Workload-only query → no non-workload words → not relevant.
 		{ssoArticle, "keycloak", "keycloak", false},
-		// Upgrade article with word "lazily" also in query → relevant.
-		{upgradeArticle, "Keycloak lazily components", "keycloak", true},
+		// Two non-workload words "lazily" and "initialize" → both in upgrade context → relevant.
+		{upgradeArticle, "keycloak lazily initialize", "keycloak", true},
+		// Only 1 non-workload word in context → not relevant with ≥2 threshold.
+		{upgradeArticle, "keycloak lazily", "keycloak", false},
 		// Empty result.
 		{`[]`, "keycloak upgrade", "keycloak", false},
 	}
@@ -119,30 +123,46 @@ func TestKbQueryFallbacks(t *testing.T) {
 
 	// Only test the cases we can verify deterministically.
 	t.Run("keycloak-lazy", func(t *testing.T) {
-		got := kbQueryFallbacks("Cannot lazily initialize collection of role RealmEntity.components", "keycloak")
+		// With alert hint: step 0 = stripped summary (direct hit), then the rest.
+		alertHint := "Cannot lazily initialize collection of role: org.keycloak.models.jpa.entities.RealmEntity.components"
+		got := kbQueryFallbacks("Cannot lazily initialize collection of role RealmEntity.components", "keycloak", alertHint)
+		if len(got) < 2 {
+			t.Fatalf("expected ≥2 fallbacks, got %v", got)
+		}
+		// Step 0 = stripped alert summary.
+		if got[0] != "Cannot lazily initialize collection of role:" {
+			// The colon at end is fine; what matters is the human-readable part is first.
+			// Trim trailing punct for comparison.
+			first := strings.TrimRight(got[0], ": ")
+			if first != "Cannot lazily initialize collection of role" {
+				t.Errorf("[0] got %q", got[0])
+			}
+		}
+	})
+
+	t.Run("keycloak-lazy-no-alert", func(t *testing.T) {
+		got := kbQueryFallbacks("Cannot lazily initialize collection of role RealmEntity.components", "keycloak", "")
 		if len(got) < 3 {
 			t.Fatalf("expected ≥3 fallbacks, got %v", got)
 		}
 		if got[0] != "Cannot lazily initialize collection of role" {
 			t.Errorf("[0] got %q", got[0])
 		}
-		if got[len(got)-2] != "keycloak Cannot" {
-			t.Errorf("[-2] got %q, want %q", got[len(got)-2], "keycloak Cannot")
-		}
-		if got[len(got)-1] != "Cannot" {
-			t.Errorf("[-1] got %q, want %q", got[len(got)-1], "Cannot")
+		last := got[len(got)-1]
+		if last != "Cannot" {
+			t.Errorf("last got %q, want %q", last, "Cannot")
 		}
 	})
 
 	t.Run("class-name-only", func(t *testing.T) {
-		got := kbQueryFallbacks("LazyInitializationException keycloak", "keycloak")
+		got := kbQueryFallbacks("LazyInitializationException keycloak", "keycloak", "")
 		if len(got) != 1 || got[0] != "keycloak" {
 			t.Errorf("got %v, want [keycloak]", got)
 		}
 	})
 
 	t.Run("no-identifiers", func(t *testing.T) {
-		got := kbQueryFallbacks("keycloak", "keycloak")
+		got := kbQueryFallbacks("keycloak", "keycloak", "")
 		if len(got) != 0 {
 			t.Errorf("got %v, want []", got)
 		}

@@ -199,4 +199,5 @@ type ToolCall struct {
 	Name         string          `json:"name"`
 	Input        json.RawMessage `json:"input"`
 	WorkloadHint string          `json:"-"` // workload name for KB query broadening; not sent to LLM
+	AlertHint    string          `json:"-"` // alert summary text for KB query seeding; not sent to LLM
 }

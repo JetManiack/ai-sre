@@ -426,7 +426,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 		for _, s := range d.servers {
 			if s.name == serverName && s.handles(toolName) {
 				if toolName == "list_documents" {
-					return d.dispatchListDocuments(ctx, s, toolName, call.WorkloadHint, call.Input)
+					return d.dispatchListDocuments(ctx, s, toolName, call.WorkloadHint, call.AlertHint, call.Input)
 				}
 				return s.call(ctx, toolName, call.Input)
 			}
@@ -436,7 +436,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 	for _, s := range d.servers {
 		if s.handles(call.Name) {
 			if call.Name == "list_documents" {
-				return d.dispatchListDocuments(ctx, s, call.Name, call.WorkloadHint, call.Input)
+				return d.dispatchListDocuments(ctx, s, call.Name, call.WorkloadHint, call.AlertHint, call.Input)
 			}
 			return s.call(ctx, call.Name, call.Input)
 		}
@@ -476,11 +476,12 @@ func listDocumentsIsEmpty(out string) bool {
 }
 
 // kbQueryFallbacks generates progressively broader query strings:
+//  0. Alert summary with identifiers stripped (if non-empty and different from query).
 //  1. Original query with identifier tokens removed.
 //  2. First half of remaining words.
 //  3. workload + first word (if workload is known and different from step 2).
 //  4. First word only.
-func kbQueryFallbacks(query, workload string) []string {
+func kbQueryFallbacks(query, workload, alertHint string) []string {
 	noIdents := reIdentifier.ReplaceAllString(query, " ")
 	noIdents = reDanglingDot.ReplaceAllString(noIdents, " ")
 	noIdents = strings.TrimSpace(noIdents)
@@ -489,6 +490,18 @@ func kbQueryFallbacks(query, workload string) []string {
 
 	words := strings.Fields(noIdents)
 	var out []string
+
+	// Step 0: alert summary stripped of identifiers — a direct path to the
+	// right article even when the model's query was poorly formed.
+	if alertHint != "" {
+		stripped := reIdentifier.ReplaceAllString(alertHint, " ")
+		stripped = reDanglingDot.ReplaceAllString(stripped, " ")
+		stripped = strings.Join(strings.Fields(stripped), " ")
+		if stripped != "" && stripped != query && stripped != noIdents {
+			out = append(out, stripped)
+		}
+	}
+
 	if noIdents != query && noIdents != "" {
 		out = append(out, noIdents)
 	}
@@ -538,9 +551,8 @@ func kbTopID(out string) string {
 }
 
 // kbHitIsRelevant reports whether the top hit's context snippet contains at
-// least one word from effectiveQuery that is not the workload/component name.
-// This prevents auto-fetching articles that only match on the workload name
-// but have nothing to do with the actual error.
+// least 2 words from effectiveQuery that are not the workload/component name.
+// Requiring 2 words prevents false positives from a single generic term.
 func kbHitIsRelevant(out, effectiveQuery, workload string) bool {
 	var hits []outlineHit
 	if err := json.Unmarshal([]byte(out), &hits); err != nil || len(hits) == 0 {
@@ -548,6 +560,7 @@ func kbHitIsRelevant(out, effectiveQuery, workload string) bool {
 	}
 	ctx := strings.ToLower(hits[0].Context)
 	workloadLower := strings.ToLower(workload)
+	matches := 0
 	for _, word := range strings.Fields(strings.ToLower(effectiveQuery)) {
 		if len(word) < 4 {
 			continue // skip short stop-words
@@ -556,18 +569,25 @@ func kbHitIsRelevant(out, effectiveQuery, workload string) bool {
 			continue
 		}
 		if strings.Contains(ctx, word) {
-			return true
+			matches++
+			if matches >= 2 {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 // dispatchListDocuments calls list_documents and, on an empty result,
-// automatically retries with progressively broader queries (identifier tokens
-// stripped, then word-halving, then workload+firstWord, then firstWord only).
-// When a non-empty result is found, it auto-fetches the top-1 document and
-// appends the full text so the model doesn't need a separate fetch call.
-func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName, workload string, input json.RawMessage) (string, error) {
+// automatically retries with progressively broader queries:
+//   0. Alert summary with identifiers stripped.
+//   1. Model query with identifiers stripped.
+//   2. Word-halved.
+//   3. workload + firstWord.
+//   4. firstWord only.
+//
+// When a non-empty, relevant result is found, the top document is auto-fetched.
+func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName, workload, alertHint string, input json.RawMessage) (string, error) {
 	var p struct {
 		Query string `json:"query"`
 	}
@@ -578,7 +598,7 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 	effectiveQuery := p.Query
 	out, err := srv.call(ctx, toolName, input)
 	if err == nil && listDocumentsIsEmpty(out) {
-		for _, q := range kbQueryFallbacks(p.Query, workload) {
+		for _, q := range kbQueryFallbacks(p.Query, workload, alertHint) {
 			slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
 			retryInput, jerr := json.Marshal(map[string]string{"query": q})
 			if jerr != nil {
