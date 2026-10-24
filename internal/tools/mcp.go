@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -424,6 +425,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 	if serverName != "" {
 		for _, s := range d.servers {
 			if s.name == serverName && s.handles(toolName) {
+				if toolName == "list_documents" {
+					return d.dispatchListDocuments(ctx, s, toolName, call.Input)
+				}
 				return s.call(ctx, toolName, call.Input)
 			}
 		}
@@ -431,6 +435,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 	}
 	for _, s := range d.servers {
 		if s.handles(call.Name) {
+			if call.Name == "list_documents" {
+				return d.dispatchListDocuments(ctx, s, call.Name, call.Input)
+			}
 			return s.call(ctx, call.Name, call.Input)
 		}
 	}
@@ -444,6 +451,81 @@ func splitToolName(name string) (server, tool string) {
 		return name[:idx], name[idx+2:]
 	}
 	return "", name
+}
+
+// reIdentifier matches tokens that look like code identifiers: dotted paths,
+// CamelCase, snake_case, or all-caps abbreviations. These confuse Outline's
+// AND-based FTS and should be stripped on retry.
+var reIdentifier = regexp.MustCompile(`\b(?:[A-Z][a-z]+(?:[A-Z][a-z]*)+|[a-zA-Z]+[._][a-zA-Z][a-zA-Z0-9._]*|[A-Z]{3,})\b`)
+
+// reDanglingDot strips residual ".word" fragments left after identifier removal
+// (e.g. "RealmEntity.components" → " .components" after CamelCase strip).
+var reDanglingDot = regexp.MustCompile(`\s*\.[a-zA-Z][a-zA-Z0-9_]*`)
+
+// listDocumentsIsEmpty reports whether an Outline list_documents JSON response
+// contains no results.
+func listDocumentsIsEmpty(out string) bool {
+	// Outline returns {"data":{"documents":[...],...}} or {"data":[...]}.
+	// Empty when no "id" key present alongside a "data" key.
+	return strings.Contains(out, `"data"`) && !strings.Contains(out, `"id"`)
+}
+
+// kbQueryFallbacks generates progressively broader query strings:
+//  1. Original query with identifier tokens removed.
+//  2. First half of remaining words.
+//  3. First word only (component name).
+func kbQueryFallbacks(query string) []string {
+	noIdents := reIdentifier.ReplaceAllString(query, " ")
+	noIdents = reDanglingDot.ReplaceAllString(noIdents, " ")
+	noIdents = strings.TrimSpace(noIdents)
+	// Collapse multiple spaces.
+	noIdents = strings.Join(strings.Fields(noIdents), " ")
+
+	words := strings.Fields(noIdents)
+	var out []string
+	if noIdents != query && noIdents != "" {
+		out = append(out, noIdents)
+	}
+	if len(words) > 2 {
+		half := strings.Join(words[:len(words)/2+1], " ")
+		if half != noIdents {
+			out = append(out, half)
+		}
+	}
+	if len(words) > 0 && words[0] != noIdents {
+		out = append(out, words[0])
+	}
+	return out
+}
+
+// dispatchListDocuments calls list_documents and, on an empty result,
+// automatically retries with progressively broader queries (identifier tokens
+// stripped, then word-halving, then component name only). At most 3 retries.
+func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName string, input json.RawMessage) (string, error) {
+	var p struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(input, &p); err != nil || p.Query == "" {
+		return srv.call(ctx, toolName, input)
+	}
+
+	out, err := srv.call(ctx, toolName, input)
+	if err != nil || !listDocumentsIsEmpty(out) {
+		return out, err
+	}
+
+	for _, q := range kbQueryFallbacks(p.Query) {
+		slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
+		retryInput, jerr := json.Marshal(map[string]string{"query": q})
+		if jerr != nil {
+			break
+		}
+		out, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
+		if err != nil || !listDocumentsIsEmpty(out) {
+			return out, err
+		}
+	}
+	return out, err
 }
 
 func (d *Dispatcher) dispatchMemoryRecall(input json.RawMessage) (string, error) {
