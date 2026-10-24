@@ -125,18 +125,24 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			break
 		}
 
-		// Gemma-4 sometimes emits raw <|tool_call>…<tool_call|> markup in the
-		// content field even when no tools were sent (forced final step). Retry
-		// once with an explicit instruction to answer in JSON instead.
-		if forceFinal && strings.HasPrefix(strings.TrimSpace(resp.Content), "<|tool_call>") {
-			slog.Warn("investigate: tool_call markup on final step, retrying with explicit instruction",
-				"step", step, "content_preview", resp.Content[:min(len(resp.Content), 80)])
+		// On a forced final step the model sometimes returns bad output: raw
+		// <|tool_call> markup (guided decoding not applied by the gateway), or
+		// empty content with only a few tokens (truncated before the JSON starts).
+		// Retry once with an explicit instruction and raised token budget.
+		badFinal := forceFinal && (strings.HasPrefix(strings.TrimSpace(resp.Content), "<|tool_call>") ||
+			(resp.Content == "" && len(resp.ToolCalls) == 0 && resp.FinishReason != "length"))
+		if badFinal {
+			slog.Warn("investigate: bad final response, retrying with explicit instruction",
+				"step", step,
+				"finish_reason", resp.FinishReason,
+				"completion_tokens", resp.Usage.CompletionTokens,
+				"content_preview", resp.Content[:min(len(resp.Content), 80)])
 			retryMsgs := append(msgs, Message{Role: "user", Content: "Tools are not available at this step. Respond only with a valid JSON object matching the InvestigationResult schema."})
 			retryReq := ChatRequest{
-				Model:          req.Model,
-				Messages:       retryMsgs,
-				ResponseFormat: req.ResponseFormat,
-				MaxTokens:      req.MaxTokens,
+				Model:              req.Model,
+				Messages:           retryMsgs,
+				ResponseFormat:     req.ResponseFormat,
+				MaxTokens:          req.MaxTokens,
 				ChatTemplateKwargs: map[string]any{"enable_thinking": false},
 			}
 			retryCtx, retryCancel := context.WithTimeout(ctx, a.cfg.StepTimeout)
