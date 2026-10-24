@@ -301,6 +301,7 @@ Investigation strategy by alert kind:
   scaling (horizontal) does NOT fix a memory leak — it just spreads it.
 - Error rate spikes (5xx): Check logs for specific error messages, then recent deployments/config changes.
 - CrashLoop: Check pod logs (previous container), then events, then resource limits.
+- CVE / security alerts (TrivyNewCritical*, VulnerabilityReport*): the evidence already contains CVE details. Include in escalate_message: the exact CVE IDs, the affected image and tag, the fixed-in version if available, and the recommended action (update image/dependency). Do NOT summarize as "update base images" without naming the CVEs.
 - General: start with memory_recall, then look at time-series before snapshots.
 
 Rules:
@@ -314,7 +315,7 @@ Rules:
 - root_cause_ru: ALWAYS fill this — one sentence summary of the root cause in Russian. Required even when action=escalate.
 - suggested_fix_ru: ALWAYS fill this — one sentence on the recommended fix in Russian. Required even when action=escalate.
 - recommended_action: "escalate" posts to the board; other actions execute only if in the allowlist.
-- escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well.
+- escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well. For CVE alerts include CVE IDs, image, and fixed-in version.
 - escalate_to: "{{.EscalateToCodeBugs}}" for code bugs, "{{.EscalateToInfra}}" for operator/infra decisions.
 - For tools requiring time range: use current time as end, subtract window for start (RFC3339 format).
 {{- if .SystemPrompt}}
