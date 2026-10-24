@@ -480,8 +480,8 @@ func listDocumentsIsEmpty(out string) bool {
 var reBoilerplate = regexp.MustCompile(`(?i)\b(what is the root cause|investigate|check|please|alert|workload|namespace|cluster|evidence|summary)\b`)
 
 // reSentenceSep splits alert summary text into fragments at punctuation
-// boundaries that typically delimit semantic clauses.
-var reSentenceSep = regexp.MustCompile(`[;:?.!\n]+`)
+// boundaries and connectors that typically delimit semantic clauses.
+var reSentenceSep = regexp.MustCompile(`[;:?.!\n,]+|\s+[-–—]\s+`)
 
 // alertHintFragments splits the alert summary into fragments, strips
 // identifiers, drops boilerplate and very short fragments, deduplicates
@@ -644,30 +644,59 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 		return srv.call(ctx, toolName, input)
 	}
 
+	// Run through all fallback queries until we find a relevant hit, or until
+	// we exhaust them. We keep the last non-empty result as a fallback so the
+	// model still has something even when no relevant article was found.
 	effectiveQuery := p.Query
 	out, err := srv.call(ctx, toolName, input)
-	if err == nil && listDocumentsIsEmpty(out) {
+	var bestOut string
+	var bestQuery string
+	if err == nil && !listDocumentsIsEmpty(out) && kbHitIsRelevant(out, effectiveQuery, workload) {
+		bestOut, bestQuery = out, effectiveQuery
+	} else {
+		// Initial call: either empty or non-relevant — keep as fallback if non-empty.
+		if err == nil && !listDocumentsIsEmpty(out) {
+			bestOut, bestQuery = out, effectiveQuery
+		}
 		for _, q := range kbQueryFallbacks(p.Query, workload, alertHint) {
-			slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
+			if err != nil {
+				break
+			}
+			slog.Info("mcp: list_documents retrying", "original", p.Query, "retry", q)
 			retryInput, jerr := json.Marshal(map[string]string{"query": q})
 			if jerr != nil {
 				break
 			}
-			out, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
-			if err != nil || !listDocumentsIsEmpty(out) {
-				effectiveQuery = q
+			var retryOut string
+			retryOut, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
+			if err != nil {
+				break
+			}
+			if listDocumentsIsEmpty(retryOut) {
+				continue
+			}
+			// Non-empty: keep as fallback, stop if relevant.
+			if bestOut == "" {
+				bestOut, bestQuery = retryOut, q
+			}
+			if kbHitIsRelevant(retryOut, q, workload) {
+				bestOut, bestQuery = retryOut, q
 				break
 			}
 		}
+		// Use the best result we found (relevant > any non-empty > empty).
+		if bestOut != "" {
+			out = bestOut
+			effectiveQuery = bestQuery
+		}
 	}
+
 	if err != nil || listDocumentsIsEmpty(out) {
 		return out, err
 	}
 
-	// Auto-fetch the top document only when the hit's context snippet contains
-	// at least one non-trivial, non-workload word from the effective query.
-	// This avoids attaching unrelated articles that only matched on the
-	// component name.
+	// Auto-fetch the top document only when the hit is relevant (≥2 matching
+	// non-workload words in the context snippet).
 	if id := kbTopID(out); id != "" && srv.handles("fetch") && kbHitIsRelevant(out, effectiveQuery, workload) {
 		fetchInput, jerr := json.Marshal(map[string]string{"id": id})
 		if jerr == nil {

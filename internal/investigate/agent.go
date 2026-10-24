@@ -97,6 +97,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 
 	seen := map[string]int{}
 	toolOutputs := map[string]string{} // cached results for dup-guard replay
+	podsListedNS := map[string]string{} // namespace → cached pods_list output; deduplicates label-selector variants
 	var lastErr error
 	needFinal := false
 
@@ -241,6 +242,22 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 		msgs = append(msgs, Message{Role: "assistant", ToolCalls: rawCalls})
 
 		for _, tc := range resp.ToolCalls {
+			// Namespace-scoped pods_list dedup: any pods_list* call for a namespace
+			// we already listed replays the prior output, regardless of label selectors.
+			if strings.HasPrefix(tc.Name, "pods_list") {
+				if ns := podListNamespace(tc.Input); ns != "" {
+					if cached, ok := podsListedNS[ns]; ok {
+						slog.Info("investigate: pods_list already done for namespace, replaying", "tool", tc.Name, "ns", ns)
+						msgs = append(msgs, Message{
+							Role:       "tool",
+							ToolCallID: tc.ID,
+							Content:    wrapToolOutput(cached) + "\n[pods already listed for this namespace — use a different tool]",
+						})
+						continue
+					}
+				}
+			}
+
 			sig := tc.Name + "|" + string(tc.Input)
 			seen[sig]++
 			if seen[sig] == 2 {
@@ -278,6 +295,11 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			out = notePodListComplete(tc.Name, out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
+			if strings.HasPrefix(tc.Name, "pods_list") {
+				if ns := podListNamespace(tc.Input); ns != "" {
+					podsListedNS[ns] = out
+				}
+			}
 			msgs = append(msgs, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -728,6 +750,18 @@ func condensePodTable(out string) string {
 		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
 	}
 	return sb.String()
+}
+
+// podListNamespace extracts the namespace field from a pods_list* tool call
+// input JSON. Returns "" if the input can't be parsed or has no namespace.
+func podListNamespace(input json.RawMessage) string {
+	var p struct {
+		Namespace string `json:"namespace"`
+	}
+	if err := json.Unmarshal(input, &p); err != nil {
+		return ""
+	}
+	return p.Namespace
 }
 
 // notePodListComplete appends a note to any pods_list* tool output reminding
