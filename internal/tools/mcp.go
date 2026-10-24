@@ -479,6 +479,11 @@ func listDocumentsIsEmpty(out string) bool {
 // alert summaries but carry no KB search signal.
 var reBoilerplate = regexp.MustCompile(`(?i)\b(what is the root cause|investigate|check|please|alert|workload|namespace|cluster|evidence|summary)\b`)
 
+// reBracketedText strips [...] tokens (e.g. "[test from claude-on-k8s]",
+// "[FIRING:1]", "[cluster=vllm]") that appear in alert summaries but add
+// noise to FTS queries.
+var reBracketedText = regexp.MustCompile(`\[[^\]]*\]`)
+
 // reSentenceSep splits alert summary text into fragments at punctuation
 // boundaries and connectors that typically delimit semantic clauses.
 var reSentenceSep = regexp.MustCompile(`[;:?.!\n,]+|\s+[-–—]\s+`)
@@ -493,6 +498,9 @@ func alertHintFragments(hint, originalQuery, strippedQuery string) []string {
 	if hint == "" {
 		return nil
 	}
+	// Strip bracketed tokens before splitting: "[test from claude-on-k8s]",
+	// "[FIRING:1]", etc. add noise and are never KB search terms.
+	hint = reBracketedText.ReplaceAllString(hint, " ")
 	parts := reSentenceSep.Split(hint, -1)
 	seen := map[string]bool{originalQuery: true, strippedQuery: true, "": true}
 
@@ -675,12 +683,13 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 			if listDocumentsIsEmpty(retryOut) {
 				continue
 			}
-			// Non-empty: keep as fallback, stop if relevant.
+			// Non-empty: keep as fallback; stop immediately if relevant.
 			if bestOut == "" {
 				bestOut, bestQuery = retryOut, q
 			}
 			if kbHitIsRelevant(retryOut, q, workload) {
 				bestOut, bestQuery = retryOut, q
+				slog.Info("mcp: list_documents relevant hit", "chosen", q)
 				break
 			}
 		}
@@ -688,6 +697,9 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 		if bestOut != "" {
 			out = bestOut
 			effectiveQuery = bestQuery
+			if !kbHitIsRelevant(out, effectiveQuery, workload) {
+				slog.Info("mcp: list_documents best available (not relevant)", "chosen", effectiveQuery)
+			}
 		}
 	}
 

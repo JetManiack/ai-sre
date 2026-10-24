@@ -142,21 +142,33 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 		// On a forced final step the model sometimes returns bad output: raw
 		// <|tool_call> markup (guided decoding not applied by the gateway), or
 		// empty content with only a few tokens (truncated before the JSON starts).
-		// Retry once with an explicit instruction and raised token budget.
-		badFinal := forceFinal && (strings.HasPrefix(strings.TrimSpace(resp.Content), "<|tool_call>") ||
-			(resp.Content == "" && len(resp.ToolCalls) == 0 && resp.FinishReason != "length"))
+		// Also handle the natural-stop case: model stopped with no tool calls and
+		// no content but non-empty reasoning — it decided to answer but emitted
+		// only the thinking trace (enable_thinking still on for the regular step).
+		// In both cases retry once with explicit instruction and enable_thinking:false.
+		naturalStop := !forceFinal &&
+			resp.Content == "" &&
+			len(resp.ToolCalls) == 0 &&
+			resp.ReasoningContent != "" &&
+			(resp.FinishReason == "stop" || resp.FinishReason == "end_turn")
+		badFinal := (forceFinal && (strings.HasPrefix(strings.TrimSpace(resp.Content), "<|tool_call>") ||
+			(resp.Content == "" && len(resp.ToolCalls) == 0 && resp.FinishReason != "length"))) ||
+			naturalStop
 		if badFinal {
 			slog.Warn("investigate: bad final response, retrying with explicit instruction",
 				"step", step,
+				"natural_stop", naturalStop,
 				"finish_reason", resp.FinishReason,
 				"completion_tokens", resp.Usage.CompletionTokens,
 				"content_preview", resp.Content[:min(len(resp.Content), 80)])
 			retryMsgs := append(msgs, Message{Role: "user", Content: "Tools are not available at this step. Respond only with a valid JSON object matching the InvestigationResult schema."})
+			// Always use the forced-final token budget and response format for the
+			// retry, even when the original request was a regular (non-forced) step.
 			retryReq := ChatRequest{
 				Model:              req.Model,
 				Messages:           retryMsgs,
-				ResponseFormat:     req.ResponseFormat,
-				MaxTokens:          req.MaxTokens,
+				ResponseFormat:     &ResponseFormat{Type: "json_schema", JSONSchema: investigationSchema()},
+				MaxTokens:          a.cfg.MaxTokensFinal,
 				ChatTemplateKwargs: map[string]any{"enable_thinking": false},
 			}
 			retryCtx, retryCancel := context.WithTimeout(ctx, a.cfg.StepTimeout)
@@ -165,6 +177,8 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			if err != nil {
 				return a.failedResult(c, fmt.Sprintf("final retry error: %v", err))
 			}
+			// Treat the retry response as a forced-final response.
+			forceFinal = true
 		}
 
 		if forceFinal || resp.FinishReason == "stop" || resp.FinishReason == "end_turn" {
