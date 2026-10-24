@@ -426,7 +426,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 		for _, s := range d.servers {
 			if s.name == serverName && s.handles(toolName) {
 				if toolName == "list_documents" {
-					return d.dispatchListDocuments(ctx, s, toolName, call.Input)
+					return d.dispatchListDocuments(ctx, s, toolName, call.WorkloadHint, call.Input)
 				}
 				return s.call(ctx, toolName, call.Input)
 			}
@@ -436,7 +436,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, call investigate.ToolCall) (s
 	for _, s := range d.servers {
 		if s.handles(call.Name) {
 			if call.Name == "list_documents" {
-				return d.dispatchListDocuments(ctx, s, call.Name, call.Input)
+				return d.dispatchListDocuments(ctx, s, call.Name, call.WorkloadHint, call.Input)
 			}
 			return s.call(ctx, call.Name, call.Input)
 		}
@@ -473,8 +473,9 @@ func listDocumentsIsEmpty(out string) bool {
 // kbQueryFallbacks generates progressively broader query strings:
 //  1. Original query with identifier tokens removed.
 //  2. First half of remaining words.
-//  3. First word only (component name).
-func kbQueryFallbacks(query string) []string {
+//  3. workload + first word (if workload is known and different from step 2).
+//  4. First word only.
+func kbQueryFallbacks(query, workload string) []string {
 	noIdents := reIdentifier.ReplaceAllString(query, " ")
 	noIdents = reDanglingDot.ReplaceAllString(noIdents, " ")
 	noIdents = strings.TrimSpace(noIdents)
@@ -492,16 +493,27 @@ func kbQueryFallbacks(query string) []string {
 			out = append(out, half)
 		}
 	}
-	if len(words) > 0 && words[0] != noIdents {
-		out = append(out, words[0])
+	// Prefer "workload firstWord" over bare "firstWord" when the workload name
+	// is known and different — avoids overly generic single-word queries.
+	if len(words) > 0 {
+		firstWord := words[0]
+		if workload != "" && workload != firstWord {
+			candidate := workload + " " + firstWord
+			if len(out) == 0 || out[len(out)-1] != candidate {
+				out = append(out, candidate)
+			}
+		}
+		if len(out) == 0 || out[len(out)-1] != firstWord {
+			out = append(out, firstWord)
+		}
 	}
 	return out
 }
 
 // dispatchListDocuments calls list_documents and, on an empty result,
 // automatically retries with progressively broader queries (identifier tokens
-// stripped, then word-halving, then component name only). At most 3 retries.
-func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName string, input json.RawMessage) (string, error) {
+// stripped, then word-halving, then workload+firstWord, then firstWord only).
+func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName, workload string, input json.RawMessage) (string, error) {
 	var p struct {
 		Query string `json:"query"`
 	}
@@ -514,7 +526,7 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 		return out, err
 	}
 
-	for _, q := range kbQueryFallbacks(p.Query) {
+	for _, q := range kbQueryFallbacks(p.Query, workload) {
 		slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
 		retryInput, jerr := json.Marshal(map[string]string{"query": q})
 		if jerr != nil {
