@@ -157,14 +157,29 @@ func processWorker(
 				continue
 			}
 			report := processCandidate(ctx, c, newAgent(), newFixer(), exec)
-			// For escalations and failed investigations the quiet window is not
-			// useful — the alert will re-fire and should be re-investigated.
-			// Clear it so the next batch picks it up.
-			if report.Fix == nil || !report.Fix.Success {
+			// Adjust the quiet window based on outcome:
+			// - Escalation (actions off or confidence < 0.7): keep the full quiet
+			//   window — the board thread already notified the on-call team, so
+			//   re-investigating on every Grafana repeat_interval is noise.
+			// - Failed fix (action was attempted but fix.Success = false): clear
+			//   immediately — the attempted remediation didn't help; let the next
+			//   re-fire trigger a fresh investigation.
+			// - Failed investigation (confidence=0, parse/timeout): keep a short
+			//   quiet window so a stuck loop doesn't spam every 30 s.
+			const shortQuiet = 10 * time.Minute
+			if report.Fix != nil && !report.Fix.Success {
+				// Attempted fix failed — clear so the next re-fire investigates again.
 				if clearErr := db.SetQuiet(c.ID, time.Time{}); clearErr != nil {
 					slog.Warn("state: SetQuiet clear error", "id", c.ID, "err", clearErr)
 				}
+			} else if report.Investigation.Confidence == 0 {
+				// Investigation failed (timeout/parse) — short quiet to avoid looping.
+				if setErr := db.SetQuiet(c.ID, time.Now().Add(shortQuiet)); setErr != nil {
+					slog.Warn("state: SetQuiet short error", "id", c.ID, "err", setErr)
+				}
 			}
+			// All other cases (successful fix, escalation) keep the full quiet window
+			// that was set by ClaimQuiet above.
 			if err := sinkStack.Send(ctx, report); err != nil {
 				slog.Warn("sink: send error", "err", err)
 			}
