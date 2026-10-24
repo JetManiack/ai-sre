@@ -4,6 +4,25 @@ import (
 	"testing"
 )
 
+func TestKbTopID(t *testing.T) {
+	cases := []struct {
+		out  string
+		want string
+	}{
+		{`[]`, ""},
+		{`null`, ""},
+		{`[{"document":{"id":"abc123","title":"Keycloak upgrade"},"context":"…"}]`, "abc123"},
+		{`[{"document":{"id":"first"}},{"document":{"id":"second"}}]`, "first"},
+		{`not json`, ""},
+	}
+	for _, tc := range cases {
+		got := kbTopID(tc.out)
+		if got != tc.want {
+			t.Errorf("kbTopID(%q) = %q, want %q", tc.out, got, tc.want)
+		}
+	}
+}
+
 func TestListDocumentsIsEmpty(t *testing.T) {
 	empty := []string{
 		`[]`,

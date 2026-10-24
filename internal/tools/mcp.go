@@ -517,9 +517,31 @@ func kbQueryFallbacks(query, workload string) []string {
 	return out
 }
 
+// outlineHit is the shape of one entry in an Outline MCP list_documents result.
+// The MCP server returns a bare JSON array of these.
+type outlineHit struct {
+	Document struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	} `json:"document"`
+	Context string `json:"context"`
+}
+
+// kbTopID returns the ID of the first document in an Outline MCP
+// list_documents result, or "" if the result is empty or unparseable.
+func kbTopID(out string) string {
+	var hits []outlineHit
+	if err := json.Unmarshal([]byte(out), &hits); err != nil || len(hits) == 0 {
+		return ""
+	}
+	return hits[0].Document.ID
+}
+
 // dispatchListDocuments calls list_documents and, on an empty result,
 // automatically retries with progressively broader queries (identifier tokens
 // stripped, then word-halving, then workload+firstWord, then firstWord only).
+// When a non-empty result is found, it auto-fetches the top-1 document and
+// appends the full text so the model doesn't need a separate fetch call.
 func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, toolName, workload string, input json.RawMessage) (string, error) {
 	var p struct {
 		Query string `json:"query"`
@@ -529,19 +551,32 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 	}
 
 	out, err := srv.call(ctx, toolName, input)
-	if err != nil || !listDocumentsIsEmpty(out) {
+	if err == nil && listDocumentsIsEmpty(out) {
+		for _, q := range kbQueryFallbacks(p.Query, workload) {
+			slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
+			retryInput, jerr := json.Marshal(map[string]string{"query": q})
+			if jerr != nil {
+				break
+			}
+			out, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
+			if err != nil || !listDocumentsIsEmpty(out) {
+				break
+			}
+		}
+	}
+	if err != nil || listDocumentsIsEmpty(out) {
 		return out, err
 	}
 
-	for _, q := range kbQueryFallbacks(p.Query, workload) {
-		slog.Info("mcp: list_documents empty, retrying", "original", p.Query, "retry", q)
-		retryInput, jerr := json.Marshal(map[string]string{"query": q})
-		if jerr != nil {
-			break
-		}
-		out, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
-		if err != nil || !listDocumentsIsEmpty(out) {
-			return out, err
+	// Auto-fetch the top document so the model doesn't need a separate call.
+	if id := kbTopID(out); id != "" && srv.handles("fetch") {
+		fetchInput, jerr := json.Marshal(map[string]string{"id": id})
+		if jerr == nil {
+			fetched, ferr := srv.call(ctx, "fetch", json.RawMessage(fetchInput))
+			if ferr == nil && fetched != "" {
+				out = out + "\n\n--- full text of top result ---\n" + fetched
+				slog.Info("mcp: list_documents auto-fetched top document", "id", id)
+			}
 		}
 	}
 	return out, err
