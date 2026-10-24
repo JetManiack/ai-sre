@@ -483,11 +483,21 @@ func condenseSeries(out string) string {
 			continue
 		}
 		var mn, mx, sum float64
-		var last float64
-		first := true
+		var firstVal, lastVal float64
+		var firstTS, lastTS float64
+		isFirst := true
 		n := 0
+		// For slope: accumulate (ts, value) pairs for linear regression.
+		var sumT, sumV, sumTT, sumTV float64
 		for _, pt := range series.Values {
 			if len(pt) < 2 {
+				continue
+			}
+			var ts float64
+			switch t := pt[0].(type) {
+			case float64:
+				ts = t
+			default:
 				continue
 			}
 			var v float64
@@ -501,28 +511,51 @@ func condenseSeries(out string) string {
 			default:
 				continue
 			}
-			if first || v < mn {
+			if isFirst || v < mn {
 				mn = v
 			}
-			if first || v > mx {
+			if isFirst || v > mx {
 				mx = v
 			}
 			sum += v
-			last = v
-			first = false
+			lastVal = v
+			lastTS = ts
+			if isFirst {
+				firstVal = v
+				firstTS = ts
+				isFirst = false
+			}
+			fn := float64(n)
+			sumT += ts
+			sumV += v
+			sumTT += ts * ts
+			sumTV += ts * v
 			n++
+			_ = fn
 		}
 		if n == 0 {
 			continue
 		}
 		avg := sum / float64(n)
+		// Linear regression slope in units/hour.
+		var slopePerHour float64
+		if n >= 2 {
+			fn := float64(n)
+			denom := fn*sumTT - sumT*sumT
+			if denom != 0 {
+				slopePerSec := (fn*sumTV - sumT*sumV) / denom
+				slopePerHour = slopePerSec * 3600
+			}
+			_ = firstTS
+			_ = lastTS
+		}
 		// Build a short label from metric labels.
 		var labels []string
 		for k, v := range series.Metric {
 			labels = append(labels, k+"="+v)
 		}
-		sb.WriteString(fmt.Sprintf("  {%s} n=%d min=%.4g max=%.4g avg=%.4g last=%.4g\n",
-			strings.Join(labels, ","), n, mn, mx, avg, last))
+		sb.WriteString(fmt.Sprintf("  {%s} n=%d first=%.4g last=%.4g min=%.4g max=%.4g avg=%.4g slope=%.4g/h\n",
+			strings.Join(labels, ","), n, firstVal, lastVal, mn, mx, avg, slopePerHour))
 	}
 	return sb.String()
 }
