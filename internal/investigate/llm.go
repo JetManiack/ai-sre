@@ -18,6 +18,9 @@ type ChatRequest struct {
 	Tools          []OpenAITool    `json:"tools,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	MaxTokens      int             `json:"max_tokens,omitempty"`
+	// ChatTemplateKwargs passes vLLM-specific template flags (e.g. enable_thinking).
+	// Serialised as chat_template_kwargs in the request body.
+	ChatTemplateKwargs map[string]any `json:"chat_template_kwargs,omitempty"`
 }
 
 // Message is a single conversation turn.

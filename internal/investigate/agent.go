@@ -107,6 +107,10 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 				JSONSchema: investigationSchema(),
 			}
 			req.MaxTokens = a.cfg.MaxTokensFinal
+			// Disable thinking on the final step: the model must return JSON only,
+			// and vLLM's gemma-4 ignores tool_call generation with json_schema active,
+			// but leaving thinking on can produce extra markup.
+			req.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 		} else {
 			req.Tools = openAITools(a.activeTools())
 			req.MaxTokens = a.cfg.MaxTokensStep
@@ -119,6 +123,28 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			lastErr = err
 			slog.Warn("investigate: llm step error", "step", step, "err", err)
 			break
+		}
+
+		// Gemma-4 sometimes emits raw <|tool_call>…<tool_call|> markup in the
+		// content field even when no tools were sent (forced final step). Retry
+		// once with an explicit instruction to answer in JSON instead.
+		if forceFinal && strings.HasPrefix(strings.TrimSpace(resp.Content), "<|tool_call>") {
+			slog.Warn("investigate: tool_call markup on final step, retrying with explicit instruction",
+				"step", step, "content_preview", resp.Content[:min(len(resp.Content), 80)])
+			retryMsgs := append(msgs, Message{Role: "user", Content: "Tools are not available at this step. Respond only with a valid JSON object matching the InvestigationResult schema."})
+			retryReq := ChatRequest{
+				Model:          req.Model,
+				Messages:       retryMsgs,
+				ResponseFormat: req.ResponseFormat,
+				MaxTokens:      req.MaxTokens,
+				ChatTemplateKwargs: map[string]any{"enable_thinking": false},
+			}
+			retryCtx, retryCancel := context.WithTimeout(ctx, a.cfg.StepTimeout)
+			resp, err = a.llm.ChatCompletionWithTools(retryCtx, retryReq)
+			retryCancel()
+			if err != nil {
+				return a.failedResult(c, fmt.Sprintf("final retry error: %v", err))
+			}
 		}
 
 		if forceFinal || resp.FinishReason == "stop" || resp.FinishReason == "end_turn" {
