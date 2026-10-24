@@ -252,6 +252,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 				slog.Warn("investigate: tool dispatch error", "tool", tc.Name, "err", err)
 				out = fmt.Sprintf("[error: %v]", err)
 			}
+			out = condenseSeries(out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
 			msgs = append(msgs, Message{
@@ -445,6 +446,85 @@ func trimOutput(s string, maxTokens int) string {
 		truncated = truncated[idx+1:]
 	}
 	return "[...trimmed...]\n" + truncated
+}
+
+// condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
+// replaces each time series with a one-line summary (min/max/avg/last) so
+// the model sees trends without accumulating thousands of data points in the
+// context. Non-matrix responses pass through unchanged.
+func condenseSeries(out string) string {
+	var r struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric map[string]string `json:"metric"`
+				Values [][]any           `json:"values"` // [[ts, "value"], ...]
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		return out
+	}
+	if r.Data.ResultType != "matrix" || len(r.Data.Result) == 0 {
+		return out
+	}
+	// Keep the original if it is already small enough.
+	const maxBytes = 4096
+	if len(out) <= maxBytes {
+		return out
+	}
+
+	var sb strings.Builder
+	sb.WriteString("metrics summary (condensed from ")
+	sb.WriteString(fmt.Sprintf("%d series):\n", len(r.Data.Result)))
+	for _, series := range r.Data.Result {
+		if len(series.Values) == 0 {
+			continue
+		}
+		var mn, mx, sum float64
+		var last float64
+		first := true
+		n := 0
+		for _, pt := range series.Values {
+			if len(pt) < 2 {
+				continue
+			}
+			var v float64
+			switch val := pt[1].(type) {
+			case string:
+				if _, err := fmt.Sscanf(val, "%f", &v); err != nil {
+					continue
+				}
+			case float64:
+				v = val
+			default:
+				continue
+			}
+			if first || v < mn {
+				mn = v
+			}
+			if first || v > mx {
+				mx = v
+			}
+			sum += v
+			last = v
+			first = false
+			n++
+		}
+		if n == 0 {
+			continue
+		}
+		avg := sum / float64(n)
+		// Build a short label from metric labels.
+		var labels []string
+		for k, v := range series.Metric {
+			labels = append(labels, k+"="+v)
+		}
+		sb.WriteString(fmt.Sprintf("  {%s} n=%d min=%.4g max=%.4g avg=%.4g last=%.4g\n",
+			strings.Join(labels, ","), n, mn, mx, avg, last))
+	}
+	return sb.String()
 }
 
 func investigationSchema() json.RawMessage {
