@@ -462,12 +462,17 @@ var reIdentifier = regexp.MustCompile(`\b(?:[A-Z][a-z]+(?:[A-Z][a-z]*)+|[a-zA-Z]
 // (e.g. "RealmEntity.components" → " .components" after CamelCase strip).
 var reDanglingDot = regexp.MustCompile(`\s*\.[a-zA-Z][a-zA-Z0-9_]*`)
 
-// listDocumentsIsEmpty reports whether an Outline list_documents JSON response
-// contains no results.
+// listDocumentsIsEmpty reports whether an Outline MCP list_documents response
+// contains no document results. The Outline MCP server returns a bare JSON
+// array of {document:{id:…},context:…} objects, so an empty result is simply
+// a JSON value with no "id" substring. We check for the absence of "id" rather
+// than for a specific wrapper key to stay robust against Outline API changes.
 func listDocumentsIsEmpty(out string) bool {
-	// Outline returns {"data":{"documents":[...],...}} or {"data":[...]}.
-	// Empty when no "id" key present alongside a "data" key.
-	return strings.Contains(out, `"data"`) && !strings.Contains(out, `"id"`)
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" || trimmed == "{}" {
+		return true
+	}
+	return !strings.Contains(out, `"id"`)
 }
 
 // kbQueryFallbacks generates progressively broader query strings:
@@ -499,11 +504,13 @@ func kbQueryFallbacks(query, workload string) []string {
 		firstWord := words[0]
 		if workload != "" && workload != firstWord {
 			candidate := workload + " " + firstWord
-			if len(out) == 0 || out[len(out)-1] != candidate {
+			if (len(out) == 0 || out[len(out)-1] != candidate) && candidate != query {
 				out = append(out, candidate)
 			}
 		}
-		if len(out) == 0 || out[len(out)-1] != firstWord {
+		// Only add the bare first word if it's not already the original query
+		// (retrying with the same string is pointless).
+		if firstWord != query && (len(out) == 0 || out[len(out)-1] != firstWord) {
 			out = append(out, firstWord)
 		}
 	}

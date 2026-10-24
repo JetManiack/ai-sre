@@ -1,0 +1,101 @@
+package tools
+
+import (
+	"testing"
+)
+
+func TestListDocumentsIsEmpty(t *testing.T) {
+	empty := []string{
+		`[]`,
+		`null`,
+		`{}`,
+		``,
+		`   `,
+		`[{"document":{"title":"x"},"context":"y"}]`, // no "id" field
+	}
+	nonEmpty := []string{
+		`[{"document":{"id":"abc123","title":"Keycloak upgrade schema"},"context":"…"}]`,
+		`[{"document":{"id":"def456"}},{"document":{"id":"ghi789"}}]`,
+	}
+
+	for _, tc := range empty {
+		if !listDocumentsIsEmpty(tc) {
+			t.Errorf("expected empty for %q", tc)
+		}
+	}
+	for _, tc := range nonEmpty {
+		if listDocumentsIsEmpty(tc) {
+			t.Errorf("expected non-empty for %q", tc)
+		}
+	}
+}
+
+func TestKbQueryFallbacks(t *testing.T) {
+	cases := []struct {
+		query    string
+		workload string
+		want     []string
+	}{
+		{
+			query:    "Cannot lazily initialize collection of role RealmEntity.components",
+			workload: "keycloak",
+			want: []string{
+				"Cannot lazily initialize collection of role",
+				"Cannot lazily initialize collection",
+				"keycloak Cannot",
+				"Cannot",
+			},
+		},
+		{
+			query:    "LazyInitializationException keycloak",
+			workload: "keycloak",
+			want:     []string{"keycloak"},
+		},
+		{
+			query:    "keycloak upgrade database schema",
+			workload: "keycloak",
+			want: []string{
+				"keycloak upgrade database",
+				"keycloak Cannot", // should not appear — first word is "keycloak"
+			},
+		},
+		{
+			query:    "keycloak",
+			workload: "keycloak",
+			want:     nil,
+		},
+	}
+
+	// Only test the cases we can verify deterministically.
+	t.Run("keycloak-lazy", func(t *testing.T) {
+		got := kbQueryFallbacks("Cannot lazily initialize collection of role RealmEntity.components", "keycloak")
+		if len(got) < 3 {
+			t.Fatalf("expected ≥3 fallbacks, got %v", got)
+		}
+		if got[0] != "Cannot lazily initialize collection of role" {
+			t.Errorf("[0] got %q", got[0])
+		}
+		if got[len(got)-2] != "keycloak Cannot" {
+			t.Errorf("[-2] got %q, want %q", got[len(got)-2], "keycloak Cannot")
+		}
+		if got[len(got)-1] != "Cannot" {
+			t.Errorf("[-1] got %q, want %q", got[len(got)-1], "Cannot")
+		}
+	})
+
+	t.Run("class-name-only", func(t *testing.T) {
+		got := kbQueryFallbacks("LazyInitializationException keycloak", "keycloak")
+		if len(got) != 1 || got[0] != "keycloak" {
+			t.Errorf("got %v, want [keycloak]", got)
+		}
+	})
+
+	t.Run("no-identifiers", func(t *testing.T) {
+		got := kbQueryFallbacks("keycloak", "keycloak")
+		if len(got) != 0 {
+			t.Errorf("got %v, want []", got)
+		}
+	})
+
+	_ = cases
+}
