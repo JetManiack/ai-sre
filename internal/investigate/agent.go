@@ -390,6 +390,9 @@ func parseResult(content string) (InvestigationResult, error) {
 				switch r.RecommendedAction {
 				case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
 				default:
+					if r.RecommendedAction == "none" {
+						r.NoProblemFound = true
+					}
 					r.RecommendedAction = ActionEscalate
 				}
 				return r, nil
@@ -401,7 +404,12 @@ func parseResult(content string) (InvestigationResult, error) {
 	case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
 		// valid
 	default:
-		// Model returned an unknown or empty action (e.g. "none"). Safe default.
+		// Model returned an unknown or empty action (e.g. "none"). When the model
+		// explicitly says "none" it means it found no problem — mark that so the
+		// board sink can post without pinging the on-call actor.
+		if r.RecommendedAction == "none" {
+			r.NoProblemFound = true
+		}
 		slog.Info("investigate: unknown recommended_action, defaulting to escalate", "action", r.RecommendedAction)
 		r.RecommendedAction = ActionEscalate
 	}

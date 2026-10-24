@@ -27,6 +27,11 @@ type InvestigationResult struct {
 	EscalateTo string `json:"escalate_to,omitempty"`
 	// EscalateMessage is the board post body. Pre-written by the LLM.
 	EscalateMessage string `json:"escalate_message,omitempty"`
+
+	// NoProblemFound is set internally (not from the LLM schema) when the model
+	// returned action="none" — meaning it explicitly concluded nothing is wrong.
+	// Used by the board sink to suppress the @mention (informational post only).
+	NoProblemFound bool `json:"-"`
 }
 
 // FixResult is the structured output of Phase 2 (verify after action).
