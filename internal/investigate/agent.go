@@ -100,16 +100,26 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 	for step := 0; step < a.cfg.MaxSteps; step++ {
 		forceFinal := step == a.cfg.MaxSteps-1 || needFinal
 
-		req := ChatRequest{Model: a.cfg.Model, Messages: msgs}
+		// On the forced final step, always ensure the last message is role:user.
+		// With gemma-4 + vLLM --reasoning-parser=gemma4, Gemma4ReasoningParser
+		// only activates the json_schema grammar after it sees the empty thought
+		// channel in the prompt. The chat template opens that channel only when
+		// the last message is role:user. If the last message is role:tool, the
+		// parser returns is_reasoning_end=False and output is unconstrained until
+		// the model emits <channel|> on its own — in long contexts (9+ steps,
+		// ~9k tokens) this produces <|tool_call> markup or immediate EOS after
+		// a few thought tokens instead of JSON.
+		finalMsgs := msgs
+		if forceFinal && len(msgs) > 0 && msgs[len(msgs)-1].Role == "tool" {
+			finalMsgs = append(msgs, Message{Role: "user", Content: "Tools are unavailable. Give the final answer as JSON."})
+		}
+		req := ChatRequest{Model: a.cfg.Model, Messages: finalMsgs}
 		if forceFinal {
 			req.ResponseFormat = &ResponseFormat{
 				Type:       "json_schema",
 				JSONSchema: investigationSchema(),
 			}
 			req.MaxTokens = a.cfg.MaxTokensFinal
-			// Disable thinking on the final step: the model must return JSON only,
-			// and vLLM's gemma-4 ignores tool_call generation with json_schema active,
-			// but leaving thinking on can produce extra markup.
 			req.ChatTemplateKwargs = map[string]any{"enable_thinking": false}
 		} else {
 			req.Tools = openAITools(a.activeTools())
