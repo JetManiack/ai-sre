@@ -274,6 +274,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 				out = fmt.Sprintf("[error: %v]", err)
 			}
 			out = condenseSeries(out)
+			out = condensePodList(out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
 			msgs = append(msgs, Message{
@@ -307,9 +308,12 @@ Investigation strategy by alert kind:
 - CVE / security alerts (TrivyNewCritical*, VulnerabilityReport*): the evidence already contains CVE details. Include in escalate_message: the exact CVE IDs, the affected image and tag, the fixed-in version if available, and the recommended action (update image/dependency). Do NOT summarize as "update base images" without naming the CVEs.
 - General: start with memory_recall, then look at time-series before snapshots.
 
+Standard investigation steps (follow in order):
+1. Call memory_recall to check past investigations of this workload.
+2. If the tool list_documents is available, call it with the key error text, component name, or CVE ID as the query — retrieve known root causes or runbooks BEFORE spending steps on raw metrics/logs. This step is required for CrashLoop, CVE, error-pattern, and unfamiliar alerts. Skip only for routine OOM/memory/5xx where the strategy below is already sufficient.
+3. Use metrics/logs/k8s tools to investigate.
+
 Rules:
-- Call memory_recall FIRST to check past investigations of this workload.
-- If a knowledge base search tool is available (e.g. list_documents/fetch), call it early for unfamiliar alert kinds (CVE, error patterns, specific component names) to retrieve known root causes or runbooks before spending steps on raw metrics/logs. Skip it for routine OOM/memory/5xx alerts where the investigation strategy is already clear.
 - For OOM/memory: call query_range over at least 6h before concluding.
 - Check logs (if log tool available) for the period before the alert.
 - Never read secrets. Never write or modify anything.
@@ -579,6 +583,79 @@ func logFinalRequestDump(req ChatRequest, step int, debugMode bool) {
 		"debug_mode", debugMode,
 		"messages", string(b),
 	)
+}
+
+// condensePodList detects a kubernetes-mcp-server YAML pod list and replaces
+// it with one line per pod ("name status restarts") when the output exceeds
+// 4 KB. Non-pod-list outputs pass through unchanged.
+func condensePodList(out string) string {
+	const maxBytes = 4096
+	if len(out) <= maxBytes {
+		return out
+	}
+	// Quick heuristic: YAML pod list contains these markers.
+	if !strings.Contains(out, "metadata:") ||
+		!strings.Contains(out, "name:") ||
+		(!strings.Contains(out, "phase:") && !strings.Contains(out, "containerStatuses:")) {
+		return out
+	}
+
+	// Parse line-by-line: extract name, phase/status, restartCount.
+	type podSummary struct {
+		name     string
+		phase    string
+		restarts int
+	}
+	var pods []podSummary
+	var cur podSummary
+	inMeta := false
+	inStatus := false
+
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "metadata:":
+			inMeta = true
+			inStatus = false
+		case trimmed == "status:":
+			inMeta = false
+			inStatus = true
+		case strings.HasPrefix(trimmed, "- metadata:") || trimmed == "- metadata:":
+			if cur.name != "" {
+				pods = append(pods, cur)
+			}
+			cur = podSummary{}
+			inMeta = true
+			inStatus = false
+		case inMeta && strings.HasPrefix(trimmed, "name:"):
+			cur.name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
+		case inStatus && strings.HasPrefix(trimmed, "phase:"):
+			cur.phase = strings.TrimSpace(strings.TrimPrefix(trimmed, "phase:"))
+		case strings.HasPrefix(trimmed, "restartCount:"):
+			var n int
+			if _, err := fmt.Sscanf(strings.TrimPrefix(trimmed, "restartCount:"), " %d", &n); err == nil {
+				cur.restarts += n
+			}
+		}
+	}
+	if cur.name != "" {
+		pods = append(pods, cur)
+	}
+	if len(pods) == 0 {
+		return out
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods):\n", len(pods)))
+	sb.WriteString("name | phase | restarts\n")
+	for _, p := range pods {
+		phase := p.phase
+		if phase == "" {
+			phase = "Unknown"
+		}
+		sb.WriteString(fmt.Sprintf("  %s | %s | %d\n", p.name, phase, p.restarts))
+	}
+	return sb.String()
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
