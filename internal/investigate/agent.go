@@ -390,9 +390,7 @@ func parseResult(content string) (InvestigationResult, error) {
 				switch r.RecommendedAction {
 				case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
 				default:
-					if r.RecommendedAction == "none" {
-						r.NoProblemFound = true
-					}
+					// Degraded parse — unknown state, never suppress paging.
 					r.RecommendedAction = ActionEscalate
 				}
 				return r, nil

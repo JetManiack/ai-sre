@@ -124,11 +124,14 @@ func (s *BoardSink) Send(ctx context.Context, r IncidentReport) error {
 		}
 	}
 	// Add @mention only when a human is actually needed.
-	// Suppress the mention when the model explicitly concluded no problem was
-	// found (NoProblemFound=true, set when the model returned action="none").
-	// Always mention for: failed fix, failed investigation (confidence=0),
-	// or any genuine escalation where the model found something wrong.
-	needsMention := inv.EscalateTo != "" && !inv.NoProblemFound
+	// Fail-safe: always page on failed fix or failed investigation (confidence==0)
+	// regardless of NoProblemFound — those are unambiguous failure modes that
+	// must not be suppressible by LLM output.
+	// Suppress the mention only when the model explicitly concluded no problem
+	// was found (NoProblemFound=true) AND the investigation succeeded
+	// (confidence>0, no failed fix).
+	alwaysPage := (r.Fix != nil && !r.Fix.Success) || inv.Confidence == 0
+	needsMention := inv.EscalateTo != "" && (alwaysPage || !inv.NoProblemFound)
 	if needsMention {
 		body = fmt.Sprintf("@%s %s", inv.EscalateTo, body)
 	}
