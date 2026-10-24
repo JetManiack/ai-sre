@@ -123,8 +123,15 @@ func (s *BoardSink) Send(ctx context.Context, r IncidentReport) error {
 				r.Candidate.Summary, inv.RootCauseRU, inv.SuggestedFixRU)
 		}
 	}
-	// Add @mention if the agent specified one.
-	if inv.EscalateTo != "" {
+	// Add @mention only when a human is actually needed: failed fix, failed
+	// investigation (confidence=0), or uncertain escalation (confidence<0.8).
+	// High-confidence "all fine" posts (action=escalate, confidence≥0.8, no
+	// failed fix) are informational and don't page the on-call actor.
+	needsMention := inv.EscalateTo != "" &&
+		(r.Fix != nil && !r.Fix.Success ||
+			inv.Confidence == 0 ||
+			inv.Confidence < 0.8)
+	if needsMention {
 		body = fmt.Sprintf("@%s %s", inv.EscalateTo, body)
 	}
 
