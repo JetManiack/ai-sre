@@ -275,6 +275,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			}
 			out = condenseSeries(out)
 			out = condensePodList(out)
+			out = hintListDocumentsEmpty(tc.Name, out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
 			msgs = append(msgs, Message{
@@ -651,7 +652,7 @@ func condensePodList(out string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods):\n", len(pods)))
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list, do not call pods_list again):\n", len(pods)))
 	sb.WriteString("name | phase | restarts\n")
 	for _, p := range pods {
 		phase := p.phase
@@ -721,12 +722,29 @@ func condensePodTable(out string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods):\n", len(pods)))
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list, do not call pods_list again):\n", len(pods)))
 	sb.WriteString("name | status | restarts\n")
 	for _, p := range pods {
 		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
 	}
 	return sb.String()
+}
+
+// hintListDocumentsEmpty appends a retry hint when list_documents returns an
+// empty result array. Outline's full-text search matches plain words, not
+// exception class names or long error strings, so the model should broaden
+// the query to component-name + 1–2 keywords.
+func hintListDocumentsEmpty(toolName, out string) string {
+	if toolName != "list_documents" {
+		return out
+	}
+	trimmed := strings.TrimSpace(out)
+	// An empty Outline result is {"data":[],...} or {"data":{"documents":[],...}}.
+	// The fastest check: does the output contain no document id fields?
+	if !strings.Contains(trimmed, `"id"`) && (strings.Contains(trimmed, `"data"`) || strings.Contains(trimmed, `[]`)) {
+		return out + "\n[no results — retry list_documents with fewer, broader terms: component name + 1 keyword only; omit error class names and stack trace fragments]"
+	}
+	return out
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
