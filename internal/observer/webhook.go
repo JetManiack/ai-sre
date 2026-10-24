@@ -82,17 +82,18 @@ func (r *WebhookReceiver) handleWebhook(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	seen := map[string]bool{}
+	// Dedup within the batch: keep the highest-severity candidate per fingerprint.
+	dedup := map[string]Candidate{}
 	for _, alert := range payload.Alerts {
 		if alert.Status != "firing" {
 			continue
 		}
 		c := alertToCandidate(alert.Labels, alert.Annotations, alert.StartsAt)
-		if seen[c.ID] {
-			slog.Info("webhook: duplicate fingerprint in batch, skipping", "id", c.ID)
-			continue
+		if prev, ok := dedup[c.ID]; !ok || severityRank(c.Severity) > severityRank(prev.Severity) {
+			dedup[c.ID] = c
 		}
-		seen[c.ID] = true
+	}
+	for _, c := range dedup {
 		select {
 		case r.candidates <- c:
 			slog.Info("webhook: candidate enqueued", "id", c.ID, "workload", c.Workload.Name)
@@ -121,6 +122,19 @@ func alertToCandidate(labels, annotations map[string]string, startsAt time.Time)
 		Workload:   wl,
 		Summary:    summary,
 		Evidence:   []string{summary},
+	}
+}
+
+func severityRank(s Severity) int {
+	switch s {
+	case SeverityCritical:
+		return 3
+	case SeverityHigh:
+		return 2
+	case SeverityMedium:
+		return 1
+	default:
+		return 0
 	}
 }
 

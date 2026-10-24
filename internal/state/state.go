@@ -67,6 +67,24 @@ func (s *DB) IsQuiet(fingerprint string) (bool, error) {
 	return time.Now().Before(time.Unix(until, 0)), nil
 }
 
+// ClaimQuiet atomically checks whether fingerprint is quiet and, if not, sets
+// it quiet until the given time. Returns true when this caller won the claim
+// (i.e. the fingerprint was NOT already quiet). Uses a single SQL statement to
+// avoid TOCTOU between concurrent workers.
+func (s *DB) ClaimQuiet(fingerprint string, until time.Time) (claimed bool, err error) {
+	now := time.Now().Unix()
+	res, err := s.db.Exec(`
+		INSERT INTO quiet_windows(fingerprint, until) VALUES(?, ?)
+		ON CONFLICT(fingerprint) DO UPDATE SET until = excluded.until
+		WHERE quiet_windows.until < ?`,
+		fingerprint, until.Unix(), now)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // SetQuiet sets a quiet window for fingerprint until the given time.
 // Passing zero time clears the quiet window.
 func (s *DB) SetQuiet(fingerprint string, until time.Time) error {

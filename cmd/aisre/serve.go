@@ -144,21 +144,27 @@ func processWorker(
 			if !ok {
 				return
 			}
-			quiet, err := db.IsQuiet(c.ID)
+			// Atomic claim: wins only when the fingerprint is not already quiet.
+			// Fails closed on DB error — skip to avoid duplicate autonomous actions.
+			claimed, err := db.ClaimQuiet(c.ID, time.Now().Add(quietWindow))
 			if err != nil {
-				slog.Warn("state: IsQuiet error", "id", c.ID, "err", err)
+				slog.Warn("state: ClaimQuiet error, skipping candidate", "id", c.ID, "err", err)
+				continue
 			}
-			if quiet {
+			if !claimed {
 				slog.Info("investigate: skipping quiet candidate", "id", c.ID,
 					"workload", c.Workload.Name, "quiet_window", quietWindow)
 				continue
 			}
-			// Set quiet window before starting the investigation so that
-			// concurrent identical candidates (same batch) are also suppressed.
-			if err := db.SetQuiet(c.ID, time.Now().Add(quietWindow)); err != nil {
-				slog.Warn("state: SetQuiet error", "id", c.ID, "err", err)
-			}
 			report := processCandidate(ctx, c, newAgent(), newFixer(), exec)
+			// For escalations and failed investigations the quiet window is not
+			// useful — the alert will re-fire and should be re-investigated.
+			// Clear it so the next batch picks it up.
+			if report.Fix == nil || !report.Fix.Success {
+				if clearErr := db.SetQuiet(c.ID, time.Time{}); clearErr != nil {
+					slog.Warn("state: SetQuiet clear error", "id", c.ID, "err", clearErr)
+				}
+			}
 			if err := sinkStack.Send(ctx, report); err != nil {
 				slog.Warn("sink: send error", "err", err)
 			}
