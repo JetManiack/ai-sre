@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/urfave/cli/v3"
 
@@ -104,11 +105,16 @@ func runServe(ctx context.Context, cmd *cli.Command) error {
 		"tools", len(discoveredTools),
 	)
 
+	quietWindow := cfg.Observer.QuietWindowDefault
+	if quietWindow == 0 {
+		quietWindow = time.Hour
+	}
+
 	for i := 0; i < concurrency; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			processWorker(ctx, candidateCh, newAgent, newFixer, executor, sinkStack)
+			processWorker(ctx, candidateCh, db, quietWindow, newAgent, newFixer, executor, sinkStack)
 		}()
 	}
 
@@ -119,9 +125,12 @@ func runServe(ctx context.Context, cmd *cli.Command) error {
 }
 
 // processWorker receives candidates and runs both investigation phases.
+// It skips candidates whose fingerprint is within the quiet window.
 func processWorker(
 	ctx context.Context,
 	ch <-chan observer.Candidate,
+	db *state.DB,
+	quietWindow time.Duration,
 	newAgent func() *investigate.Agent,
 	newFixer func() *investigate.Fixer,
 	exec *decision.Executor,
@@ -134,6 +143,20 @@ func processWorker(
 		case c, ok := <-ch:
 			if !ok {
 				return
+			}
+			quiet, err := db.IsQuiet(c.ID)
+			if err != nil {
+				slog.Warn("state: IsQuiet error", "id", c.ID, "err", err)
+			}
+			if quiet {
+				slog.Info("investigate: skipping quiet candidate", "id", c.ID,
+					"workload", c.Workload.Name, "quiet_window", quietWindow)
+				continue
+			}
+			// Set quiet window before starting the investigation so that
+			// concurrent identical candidates (same batch) are also suppressed.
+			if err := db.SetQuiet(c.ID, time.Now().Add(quietWindow)); err != nil {
+				slog.Warn("state: SetQuiet error", "id", c.ID, "err", err)
 			}
 			report := processCandidate(ctx, c, newAgent(), newFixer(), exec)
 			if err := sinkStack.Send(ctx, report); err != nil {

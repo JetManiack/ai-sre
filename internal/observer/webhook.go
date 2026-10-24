@@ -82,11 +82,17 @@ func (r *WebhookReceiver) handleWebhook(w http.ResponseWriter, req *http.Request
 		return
 	}
 
+	seen := map[string]bool{}
 	for _, alert := range payload.Alerts {
 		if alert.Status != "firing" {
 			continue
 		}
 		c := alertToCandidate(alert.Labels, alert.Annotations, alert.StartsAt)
+		if seen[c.ID] {
+			slog.Info("webhook: duplicate fingerprint in batch, skipping", "id", c.ID)
+			continue
+		}
+		seen[c.ID] = true
 		select {
 		case r.candidates <- c:
 			slog.Info("webhook: candidate enqueued", "id", c.ID, "workload", c.Workload.Name)
