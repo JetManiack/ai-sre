@@ -306,6 +306,7 @@ Investigation strategy by alert kind:
 
 Rules:
 - Call memory_recall FIRST to check past investigations of this workload.
+- If a knowledge base search tool is available (e.g. list_documents/fetch), call it early for unfamiliar alert kinds (CVE, error patterns, specific component names) to retrieve known root causes or runbooks before spending steps on raw metrics/logs. Skip it for routine OOM/memory/5xx alerts where the investigation strategy is already clear.
 - For OOM/memory: call query_range over at least 6h before concluding.
 - Check logs (if log tool available) for the period before the alert.
 - Never read secrets. Never write or modify anything.
