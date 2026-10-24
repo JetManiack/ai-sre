@@ -186,7 +186,7 @@ func Build(cfg config.SinksConfig) Sink {
 	if cfg.StdoutJSON {
 		sinks = append(sinks, StdoutJSON{})
 	}
-	if cfg.Board.URL != "" {
+	if cfg.Board.Enabled && cfg.Board.URL != "" {
 		sinks = append(sinks, NewBoardSink(cfg.Board))
 	}
 	if cfg.Webhook.Enabled && cfg.Webhook.URL != "" {
