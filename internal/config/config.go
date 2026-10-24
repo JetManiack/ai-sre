@@ -141,6 +141,10 @@ type InvestigateConfig struct {
 	TotalTimeout   time.Duration `yaml:"total_timeout"`     // default 240s
 	// Concurrency is max simultaneous investigations (default 1).
 	Concurrency int `yaml:"concurrency"`
+	// DebugRequestDump enables logging of message content previews (first 200
+	// chars per message) in logFinalRequestDump. Disabled by default: tool
+	// outputs and prompt content can contain sensitive infrastructure data.
+	DebugRequestDump bool `yaml:"debug_request_dump"`
 }
 
 // ActionsConfig lists autonomous actions the agent may execute.

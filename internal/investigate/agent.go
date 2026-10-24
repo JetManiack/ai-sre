@@ -163,7 +163,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 					"prompt_tokens", resp.Usage.PromptTokens,
 					"completion_tokens", resp.Usage.CompletionTokens,
 				)
-				logFinalRequestDump(req, step)
+				logFinalRequestDump(req, step, a.cfg.DebugRequestDump)
 				if resp.FinishReason == "length" {
 					return a.failedResult(c, "final response truncated by max_tokens (context too large)")
 				}
@@ -183,7 +183,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 						"prompt_tokens", resp.Usage.PromptTokens,
 						"completion_tokens", resp.Usage.CompletionTokens,
 					)
-					logFinalRequestDump(req, step)
+					logFinalRequestDump(req, step, a.cfg.DebugRequestDump)
 					return a.failedResult(c, fmt.Sprintf("parse failed: %v", err))
 				}
 				slog.Info("investigate: parsed result",
@@ -456,21 +456,27 @@ func trimOutput(s string, maxTokens int) string {
 	return "[...trimmed...]\n" + truncated
 }
 
-// logFinalRequestDump logs the final request messages (role + first 200 chars
-// of content) to help diagnose why guided decoding failed. The API key is
-// never logged — it lives only in the HTTP Authorization header, not in the
-// ChatRequest struct.
-func logFinalRequestDump(req ChatRequest, step int) {
+// logFinalRequestDump logs a structural summary of the final request to help
+// diagnose why guided decoding failed. Content previews (first 200 chars) are
+// included only when debugMode is true — tool outputs and prompt content can
+// contain sensitive infrastructure data, so previews are off in production.
+func logFinalRequestDump(req ChatRequest, step int, debugMode bool) {
 	type msgSummary struct {
-		Role       string `json:"role"`
-		Preview    string `json:"preview,omitempty"`
-		ToolCalls  int    `json:"tool_calls,omitempty"`
-		ToolCallID string `json:"tool_call_id,omitempty"`
+		Role        string `json:"role"`
+		ContentLen  int    `json:"content_len,omitempty"`
+		Preview     string `json:"preview,omitempty"`
+		ToolCalls   int    `json:"tool_calls,omitempty"`
+		ToolCallID  string `json:"tool_call_id,omitempty"`
 	}
 	var msgs []msgSummary
 	for _, m := range req.Messages {
-		ms := msgSummary{Role: m.Role, ToolCalls: len(m.ToolCalls), ToolCallID: m.ToolCallID}
-		if m.Content != "" {
+		ms := msgSummary{
+			Role:       m.Role,
+			ContentLen: len(m.Content),
+			ToolCalls:  len(m.ToolCalls),
+			ToolCallID: m.ToolCallID,
+		}
+		if debugMode && m.Content != "" {
 			ms.Preview = m.Content[:min(len(m.Content), 200)]
 		}
 		msgs = append(msgs, ms)
@@ -482,6 +488,7 @@ func logFinalRequestDump(req ChatRequest, step int) {
 		"n_messages", len(req.Messages),
 		"max_tokens", req.MaxTokens,
 		"chat_template_kwargs", req.ChatTemplateKwargs,
+		"debug_mode", debugMode,
 		"messages", string(b),
 	)
 }
