@@ -387,7 +387,9 @@ func parseResult(content string) (InvestigationResult, error) {
 	if err := json.Unmarshal([]byte(content), &r); err != nil {
 		if idx := strings.LastIndex(content, "}"); idx > 0 {
 			if err2 := json.Unmarshal([]byte(content[:idx+1]), &r); err2 == nil {
-				if r.RecommendedAction == "" {
+				switch r.RecommendedAction {
+				case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
+				default:
 					r.RecommendedAction = ActionEscalate
 				}
 				return r, nil
@@ -395,7 +397,12 @@ func parseResult(content string) (InvestigationResult, error) {
 		}
 		return InvestigationResult{}, err
 	}
-	if r.RecommendedAction == "" {
+	switch r.RecommendedAction {
+	case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
+		// valid
+	default:
+		// Model returned an unknown or empty action (e.g. "none"). Safe default.
+		slog.Info("investigate: unknown recommended_action, defaulting to escalate", "action", r.RecommendedAction)
 		r.RecommendedAction = ActionEscalate
 	}
 	// Gemma-4 sometimes puts all text into escalate_message and leaves
