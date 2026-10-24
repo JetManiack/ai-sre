@@ -275,6 +275,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			}
 			out = condenseSeries(out)
 			out = condensePodList(out)
+			out = notePodListComplete(tc.Name, out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
 			msgs = append(msgs, Message{
@@ -727,6 +728,21 @@ func condensePodTable(out string) string {
 		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
 	}
 	return sb.String()
+}
+
+// notePodListComplete appends a note to any pods_list* tool output reminding
+// the model that the result is the complete list. This prevents the model from
+// re-calling with different label selectors when it thinks the data may be
+// paginated or filtered. The note is added even when the output was not
+// condensed (i.e. below the 4 KB threshold).
+func notePodListComplete(toolName, out string) string {
+	if !strings.HasPrefix(toolName, "pods_list") {
+		return out
+	}
+	if strings.Contains(out, "complete list") {
+		return out // already noted (e.g. by condensePodList)
+	}
+	return out + "\n[this is the complete pod list — do not call pods_list again with a different label selector]"
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
