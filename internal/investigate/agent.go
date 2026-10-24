@@ -97,7 +97,6 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 
 	seen := map[string]int{}
 	toolOutputs := map[string]string{} // cached results for dup-guard replay
-	podsListedNS := map[string]string{} // namespace → cached pods_list output; deduplicates label-selector variants
 	var lastErr error
 	needFinal := false
 
@@ -256,22 +255,6 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 		msgs = append(msgs, Message{Role: "assistant", ToolCalls: rawCalls})
 
 		for _, tc := range resp.ToolCalls {
-			// Namespace-scoped pods_list dedup: any pods_list* call for a namespace
-			// we already listed replays the prior output, regardless of label selectors.
-			if strings.HasPrefix(tc.Name, "pods_list") {
-				if ns := podListNamespace(tc.Input); ns != "" {
-					if cached, ok := podsListedNS[ns]; ok {
-						slog.Info("investigate: pods_list already done for namespace, replaying", "tool", tc.Name, "ns", ns)
-						msgs = append(msgs, Message{
-							Role:       "tool",
-							ToolCallID: tc.ID,
-							Content:    wrapToolOutput(cached) + "\n[pods already listed for this namespace — use a different tool]",
-						})
-						continue
-					}
-				}
-			}
-
 			sig := tc.Name + "|" + string(tc.Input)
 			seen[sig]++
 			if seen[sig] == 2 {
@@ -299,21 +282,14 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 			}
 
 			slog.Info("investigate: tool call", "step", step, "tool", tc.Name, "input", string(tc.Input))
-			out, err := a.dispatcher.Dispatch(ctx, ToolCall{Name: tc.Name, Input: tc.Input, WorkloadHint: c.Workload.Name, AlertHint: c.Summary})
+			out, err := a.dispatcher.Dispatch(ctx, ToolCall{Name: tc.Name, Input: tc.Input})
 			if err != nil {
 				slog.Warn("investigate: tool dispatch error", "tool", tc.Name, "err", err)
 				out = fmt.Sprintf("[error: %v]", err)
 			}
 			out = condenseSeries(out)
-			out = condensePodList(out)
-			out = notePodListComplete(tc.Name, out)
 			out = trimOutput(out, a.cfg.MaxToolOutputTokens)
 			toolOutputs[sig] = out
-			if strings.HasPrefix(tc.Name, "pods_list") {
-				if ns := podListNamespace(tc.Input); ns != "" {
-					podsListedNS[ns] = out
-				}
-			}
 			msgs = append(msgs, Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -363,6 +339,16 @@ Rules:
 - escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well. For CVE alerts include CVE IDs, image, and fixed-in version.
 - escalate_to: "{{.EscalateToCodeBugs}}" for code bugs, "{{.EscalateToInfra}}" for operator/infra decisions.
 - For tools requiring time range: use current time as end, subtract window for start (RFC3339 format).
+
+Knowledge base search (list_documents / similar tools):
+- Use short, specific queries of 3–6 meaningful words — the search engine ANDs every word, so long sentences always return empty.
+- Prefer the human-readable part of an error over its class name: "Cannot lazily initialize collection role" beats "LazyInitializationException".
+- If the result is empty, retry with a shorter sub-phrase from the error or with the component name alone.
+- When you find a relevant article, call fetch/read to get the full text before drawing conclusions.
+
+Pod listing:
+- pods_list* tools return the complete list for the queried scope. Do not call pods_list again with different label selectors for the same namespace — the result will be the same.
+- If you need to narrow down, use describe or logs on the specific pod instead.
 {{- if .SystemPrompt}}
 Site context:
 {{.SystemPrompt}}
@@ -620,177 +606,6 @@ func logFinalRequestDump(req ChatRequest, step int, debugMode bool) {
 		"debug_mode", debugMode,
 		"messages", string(b),
 	)
-}
-
-// condensePodList detects a kubernetes-mcp-server pod list (YAML or table
-// format) and replaces it with one line per pod when the output exceeds 4 KB.
-// Non-pod-list outputs pass through unchanged.
-func condensePodList(out string) string {
-	const maxBytes = 4096
-	if len(out) <= maxBytes {
-		return out
-	}
-
-	// Table format: first non-empty line is "NAMESPACE … NAME … STATUS … RESTARTS …"
-	if pods := condensePodTable(out); pods != "" {
-		return pods
-	}
-
-	// YAML format: contains metadata: + name: + phase:/containerStatuses:
-	if !strings.Contains(out, "metadata:") ||
-		!strings.Contains(out, "name:") ||
-		(!strings.Contains(out, "phase:") && !strings.Contains(out, "containerStatuses:")) {
-		return out
-	}
-
-	type podSummary struct {
-		name     string
-		phase    string
-		restarts int
-	}
-	var pods []podSummary
-	var cur podSummary
-	inMeta := false
-	inStatus := false
-
-	for _, line := range strings.Split(out, "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case trimmed == "metadata:":
-			inMeta = true
-			inStatus = false
-		case trimmed == "status:":
-			inMeta = false
-			inStatus = true
-		case strings.HasPrefix(trimmed, "- metadata:") || trimmed == "- metadata:":
-			if cur.name != "" {
-				pods = append(pods, cur)
-			}
-			cur = podSummary{}
-			inMeta = true
-			inStatus = false
-		case inMeta && strings.HasPrefix(trimmed, "name:"):
-			cur.name = strings.TrimSpace(strings.TrimPrefix(trimmed, "name:"))
-		case inStatus && strings.HasPrefix(trimmed, "phase:"):
-			cur.phase = strings.TrimSpace(strings.TrimPrefix(trimmed, "phase:"))
-		case strings.HasPrefix(trimmed, "restartCount:"):
-			var n int
-			if _, err := fmt.Sscanf(strings.TrimPrefix(trimmed, "restartCount:"), " %d", &n); err == nil {
-				cur.restarts += n
-			}
-		}
-	}
-	if cur.name != "" {
-		pods = append(pods, cur)
-	}
-	if len(pods) == 0 {
-		return out
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list for this namespace, do not call pods_list again):\n", len(pods)))
-	sb.WriteString("name | phase | restarts\n")
-	for _, p := range pods {
-		phase := p.phase
-		if phase == "" {
-			phase = "Unknown"
-		}
-		sb.WriteString(fmt.Sprintf("  %s | %s | %d\n", p.name, phase, p.restarts))
-	}
-	return sb.String()
-}
-
-// condensePodTable handles the table output format from kubernetes-mcp-server
-// (--list-output=table). Returns "" if the output is not a pod table.
-// Header: NAMESPACE   APIVERSION   KIND   NAME   READY   STATUS   RESTARTS   AGE
-func condensePodTable(out string) string {
-	lines := strings.Split(out, "\n")
-	// Find the header line.
-	hdrIdx := -1
-	var nameCol, statusCol, restartsCol int
-	for i, line := range lines {
-		upper := strings.ToUpper(line)
-		if strings.Contains(upper, "NAME") && strings.Contains(upper, "STATUS") && strings.Contains(upper, "RESTART") {
-			hdrIdx = i
-			// Determine column positions by header field offsets.
-			nameCol = strings.Index(upper, "NAME")
-			statusCol = strings.Index(upper, "STATUS")
-			restartsCol = strings.Index(upper, "RESTART")
-			break
-		}
-	}
-	if hdrIdx < 0 || nameCol < 0 || statusCol < 0 || restartsCol < 0 {
-		return ""
-	}
-
-	type podSummary struct {
-		name     string
-		status   string
-		restarts string
-	}
-	var pods []podSummary
-	for _, line := range lines[hdrIdx+1:] {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		extract := func(start int) string {
-			if start >= len(line) {
-				return ""
-			}
-			end := strings.IndexByte(line[start:], ' ')
-			if end < 0 {
-				return strings.TrimSpace(line[start:])
-			}
-			return strings.TrimSpace(line[start : start+end])
-		}
-		name := extract(nameCol)
-		if name == "" {
-			continue
-		}
-		pods = append(pods, podSummary{
-			name:     name,
-			status:   extract(statusCol),
-			restarts: extract(restartsCol),
-		})
-	}
-	if len(pods) == 0 {
-		return ""
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list for this namespace, do not call pods_list again):\n", len(pods)))
-	sb.WriteString("name | status | restarts\n")
-	for _, p := range pods {
-		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
-	}
-	return sb.String()
-}
-
-// podListNamespace extracts the namespace field from a pods_list* tool call
-// input JSON. Returns "" if the input can't be parsed or has no namespace.
-func podListNamespace(input json.RawMessage) string {
-	var p struct {
-		Namespace string `json:"namespace"`
-	}
-	if err := json.Unmarshal(input, &p); err != nil {
-		return ""
-	}
-	return p.Namespace
-}
-
-// notePodListComplete appends a note to any pods_list* tool output reminding
-// the model that the result is the complete list. This prevents the model from
-// re-calling with different label selectors when it thinks the data may be
-// paginated or filtered. The note is added even when the output was not
-// condensed (i.e. below the 4 KB threshold).
-func notePodListComplete(toolName, out string) string {
-	if !strings.HasPrefix(toolName, "pods_list") {
-		return out
-	}
-	if strings.Contains(out, "complete list") {
-		return out // already noted (e.g. by condensePodList)
-	}
-	return out + "\n[this is the complete pod list for the queried namespace — do not call pods_list again with different namespaces or label selectors; use other tools to investigate]"
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and

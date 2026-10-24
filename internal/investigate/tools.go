@@ -195,9 +195,7 @@ func mustJSON(v any) json.RawMessage {
 
 // ToolCall is a single LLM→executor request.
 type ToolCall struct {
-	ID           string          `json:"id"`
-	Name         string          `json:"name"`
-	Input        json.RawMessage `json:"input"`
-	WorkloadHint string          `json:"-"` // workload name for KB query broadening; not sent to LLM
-	AlertHint    string          `json:"-"` // alert summary text for KB query seeding; not sent to LLM
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
