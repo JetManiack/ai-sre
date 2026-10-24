@@ -475,6 +475,58 @@ func listDocumentsIsEmpty(out string) bool {
 	return !strings.Contains(out, `"id"`)
 }
 
+// reBoilerplate matches common boilerplate phrases that appear in ai-sre
+// alert summaries but carry no KB search signal.
+var reBoilerplate = regexp.MustCompile(`(?i)\b(what is the root cause|investigate|check|please|alert|workload|namespace|cluster|evidence|summary)\b`)
+
+// reSentenceSep splits alert summary text into fragments at punctuation
+// boundaries that typically delimit semantic clauses.
+var reSentenceSep = regexp.MustCompile(`[;:?.!\n]+`)
+
+// alertHintFragments splits the alert summary into fragments, strips
+// identifiers, drops boilerplate and very short fragments, deduplicates
+// against existing candidates, and returns the survivors sorted
+// longest-first. This gives a targeted sub-sentence (e.g.
+// "Cannot lazily initialize collection of role") before a whole sentence
+// that would AND every word against Outline's FTS and always return empty.
+func alertHintFragments(hint, originalQuery, strippedQuery string) []string {
+	if hint == "" {
+		return nil
+	}
+	parts := reSentenceSep.Split(hint, -1)
+	seen := map[string]bool{originalQuery: true, strippedQuery: true, "": true}
+
+	type frag struct {
+		text  string
+		words int
+	}
+	var frags []frag
+	for _, p := range parts {
+		s := reIdentifier.ReplaceAllString(p, " ")
+		s = reDanglingDot.ReplaceAllString(s, " ")
+		s = reBoilerplate.ReplaceAllString(s, " ")
+		s = strings.Join(strings.Fields(s), " ")
+		if len(strings.Fields(s)) < 3 || seen[s] {
+			continue
+		}
+		seen[s] = true
+		frags = append(frags, frag{s, len(strings.Fields(s))})
+	}
+	// Sort longest-first so the most specific fragment is tried first.
+	for i := 0; i < len(frags); i++ {
+		for j := i + 1; j < len(frags); j++ {
+			if frags[j].words > frags[i].words {
+				frags[i], frags[j] = frags[j], frags[i]
+			}
+		}
+	}
+	out := make([]string, 0, len(frags))
+	for _, f := range frags {
+		out = append(out, f.text)
+	}
+	return out
+}
+
 // kbQueryFallbacks generates progressively broader query strings:
 //  0. Alert summary with identifiers stripped (if non-empty and different from query).
 //  1. Original query with identifier tokens removed.
@@ -491,15 +543,12 @@ func kbQueryFallbacks(query, workload, alertHint string) []string {
 	words := strings.Fields(noIdents)
 	var out []string
 
-	// Step 0: alert summary stripped of identifiers — a direct path to the
-	// right article even when the model's query was poorly formed.
-	if alertHint != "" {
-		stripped := reIdentifier.ReplaceAllString(alertHint, " ")
-		stripped = reDanglingDot.ReplaceAllString(stripped, " ")
-		stripped = strings.Join(strings.Fields(stripped), " ")
-		if stripped != "" && stripped != query && stripped != noIdents {
-			out = append(out, stripped)
-		}
+	// Step 0: alert summary split into fragments at punctuation (:;.?\n),
+	// stripped of identifiers, sorted longest-first, tried in order.
+	// This gives "Cannot lazily initialize collection of role" before the
+	// long whole-sentence that ANDs every word and always returns empty.
+	for _, frag := range alertHintFragments(alertHint, query, noIdents) {
+		out = append(out, frag)
 	}
 
 	if noIdents != query && noIdents != "" {

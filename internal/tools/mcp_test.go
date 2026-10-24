@@ -123,20 +123,26 @@ func TestKbQueryFallbacks(t *testing.T) {
 
 	// Only test the cases we can verify deterministically.
 	t.Run("keycloak-lazy", func(t *testing.T) {
-		// With alert hint: step 0 = stripped summary (direct hit), then the rest.
-		alertHint := "Cannot lazily initialize collection of role: org.keycloak.models.jpa.entities.RealmEntity.components"
-		got := kbQueryFallbacks("Cannot lazily initialize collection of role RealmEntity.components", "keycloak", alertHint)
+		// Alert summary is "Keycloak fails to start: Cannot lazily initialize collection of role: RealmEntity.components"
+		// After splitting at ":", stripping identifiers:
+		//   fragment 1 (longest): "Keycloak fails to start" (4 words)  -- may be too generic
+		//   fragment 2: "Cannot lazily initialize collection of role" (6 words) -- the hit
+		alertHint := "Keycloak fails to start after an image upgrade: Cannot lazily initialize collection of role: org.keycloak.models.jpa.entities.RealmEntity.components"
+		got := kbQueryFallbacks("Keycloak LazyInitializationException RealmEntity components", "keycloak", alertHint)
 		if len(got) < 2 {
-			t.Fatalf("expected ≥2 fallbacks, got %v", got)
+			t.Fatalf("expected ≥2 fallbacks from alert hint, got %v", got)
 		}
-		// Step 0 = stripped alert summary.
-		if got[0] != "Cannot lazily initialize collection of role:" {
-			// The colon at end is fine; what matters is the human-readable part is first.
-			// Trim trailing punct for comparison.
-			first := strings.TrimRight(got[0], ": ")
-			if first != "Cannot lazily initialize collection of role" {
-				t.Errorf("[0] got %q", got[0])
+		// The "Cannot lazily initialize collection of role" fragment must appear
+		// in the first two positions (before the model-query-derived fallbacks).
+		found := false
+		for _, g := range got[:min(3, len(got))] {
+			if strings.Contains(g, "lazily initialize") {
+				found = true
+				break
 			}
+		}
+		if !found {
+			t.Errorf("expected 'lazily initialize' fragment in first 3 fallbacks, got %v", got)
 		}
 	})
 

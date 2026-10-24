@@ -652,7 +652,7 @@ func condensePodList(out string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list, do not call pods_list again):\n", len(pods)))
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list for this namespace, do not call pods_list again):\n", len(pods)))
 	sb.WriteString("name | phase | restarts\n")
 	for _, p := range pods {
 		phase := p.phase
@@ -722,7 +722,7 @@ func condensePodTable(out string) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list, do not call pods_list again):\n", len(pods)))
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods — this is the complete list for this namespace, do not call pods_list again):\n", len(pods)))
 	sb.WriteString("name | status | restarts\n")
 	for _, p := range pods {
 		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
@@ -742,7 +742,7 @@ func notePodListComplete(toolName, out string) string {
 	if strings.Contains(out, "complete list") {
 		return out // already noted (e.g. by condensePodList)
 	}
-	return out + "\n[this is the complete pod list — do not call pods_list again with a different label selector]"
+	return out + "\n[this is the complete pod list for the queried namespace — do not call pods_list again with different namespaces or label selectors; use other tools to investigate]"
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
