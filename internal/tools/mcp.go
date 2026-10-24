@@ -537,6 +537,31 @@ func kbTopID(out string) string {
 	return hits[0].Document.ID
 }
 
+// kbHitIsRelevant reports whether the top hit's context snippet contains at
+// least one word from effectiveQuery that is not the workload/component name.
+// This prevents auto-fetching articles that only match on the workload name
+// but have nothing to do with the actual error.
+func kbHitIsRelevant(out, effectiveQuery, workload string) bool {
+	var hits []outlineHit
+	if err := json.Unmarshal([]byte(out), &hits); err != nil || len(hits) == 0 {
+		return false
+	}
+	ctx := strings.ToLower(hits[0].Context)
+	workloadLower := strings.ToLower(workload)
+	for _, word := range strings.Fields(strings.ToLower(effectiveQuery)) {
+		if len(word) < 4 {
+			continue // skip short stop-words
+		}
+		if word == workloadLower {
+			continue
+		}
+		if strings.Contains(ctx, word) {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatchListDocuments calls list_documents and, on an empty result,
 // automatically retries with progressively broader queries (identifier tokens
 // stripped, then word-halving, then workload+firstWord, then firstWord only).
@@ -550,6 +575,7 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 		return srv.call(ctx, toolName, input)
 	}
 
+	effectiveQuery := p.Query
 	out, err := srv.call(ctx, toolName, input)
 	if err == nil && listDocumentsIsEmpty(out) {
 		for _, q := range kbQueryFallbacks(p.Query, workload) {
@@ -560,6 +586,7 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 			}
 			out, err = srv.call(ctx, toolName, json.RawMessage(retryInput))
 			if err != nil || !listDocumentsIsEmpty(out) {
+				effectiveQuery = q
 				break
 			}
 		}
@@ -568,8 +595,11 @@ func (d *Dispatcher) dispatchListDocuments(ctx context.Context, srv *mcpClient, 
 		return out, err
 	}
 
-	// Auto-fetch the top document so the model doesn't need a separate call.
-	if id := kbTopID(out); id != "" && srv.handles("fetch") {
+	// Auto-fetch the top document only when the hit's context snippet contains
+	// at least one non-trivial, non-workload word from the effective query.
+	// This avoids attaching unrelated articles that only matched on the
+	// component name.
+	if id := kbTopID(out); id != "" && srv.handles("fetch") && kbHitIsRelevant(out, effectiveQuery, workload) {
 		fetchInput, jerr := json.Marshal(map[string]string{"id": id})
 		if jerr == nil {
 			fetched, ferr := srv.call(ctx, "fetch", json.RawMessage(fetchInput))

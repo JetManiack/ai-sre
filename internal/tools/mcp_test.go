@@ -4,6 +4,38 @@ import (
 	"testing"
 )
 
+func TestKbHitIsRelevant(t *testing.T) {
+	// Real article that matches the error phrase.
+	upgradeArticle := `[{"document":{"id":"GZUkRokaV7","title":"Keycloak 26.x upgrade"},"context":"Failed to start server… Cannot lazily initialize collection of role"}]`
+	// Unrelated article that only mentions Keycloak and "component".
+	ssoArticle := `[{"document":{"id":"jQNSO341WO","title":"SSO gateway"},"context":"A gateway that lets bearer-token API clients skip interactive SSO using Keycloak component"}]`
+
+	cases := []struct {
+		out   string
+		query string
+		wl    string
+		want  bool
+	}{
+		// Correct query → upgrade article context has "lazily", "initialize", etc. → relevant.
+		{upgradeArticle, "Cannot lazily initialize collection of role", "keycloak", true},
+		// vllm failure case: stripped query "Keycloak components", SSO article context has "component"
+		// (singular) but not "components" (plural) → exact word absent → not relevant → no auto-fetch.
+		{ssoArticle, "Keycloak components", "keycloak", false},
+		// Workload-only query → no non-workload words → not relevant.
+		{ssoArticle, "keycloak", "keycloak", false},
+		// Upgrade article with word "lazily" also in query → relevant.
+		{upgradeArticle, "Keycloak lazily components", "keycloak", true},
+		// Empty result.
+		{`[]`, "keycloak upgrade", "keycloak", false},
+	}
+	for i, tc := range cases {
+		got := kbHitIsRelevant(tc.out, tc.query, tc.wl)
+		if got != tc.want {
+			t.Errorf("[%d] kbHitIsRelevant(query=%q, wl=%q) = %v, want %v", i, tc.query, tc.wl, got, tc.want)
+		}
+	}
+}
+
 func TestKbTopID(t *testing.T) {
 	cases := []struct {
 		out  string
