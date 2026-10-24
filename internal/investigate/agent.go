@@ -163,6 +163,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 					"prompt_tokens", resp.Usage.PromptTokens,
 					"completion_tokens", resp.Usage.CompletionTokens,
 				)
+				logFinalRequestDump(req, step)
 				if resp.FinishReason == "length" {
 					return a.failedResult(c, "final response truncated by max_tokens (context too large)")
 				}
@@ -182,6 +183,7 @@ func (a *Agent) Investigate(ctx context.Context, c observer.Candidate) Investiga
 						"prompt_tokens", resp.Usage.PromptTokens,
 						"completion_tokens", resp.Usage.CompletionTokens,
 					)
+					logFinalRequestDump(req, step)
 					return a.failedResult(c, fmt.Sprintf("parse failed: %v", err))
 				}
 				slog.Info("investigate: parsed result",
@@ -452,6 +454,36 @@ func trimOutput(s string, maxTokens int) string {
 		truncated = truncated[idx+1:]
 	}
 	return "[...trimmed...]\n" + truncated
+}
+
+// logFinalRequestDump logs the final request messages (role + first 200 chars
+// of content) to help diagnose why guided decoding failed. The API key is
+// never logged — it lives only in the HTTP Authorization header, not in the
+// ChatRequest struct.
+func logFinalRequestDump(req ChatRequest, step int) {
+	type msgSummary struct {
+		Role       string `json:"role"`
+		Preview    string `json:"preview,omitempty"`
+		ToolCalls  int    `json:"tool_calls,omitempty"`
+		ToolCallID string `json:"tool_call_id,omitempty"`
+	}
+	var msgs []msgSummary
+	for _, m := range req.Messages {
+		ms := msgSummary{Role: m.Role, ToolCalls: len(m.ToolCalls), ToolCallID: m.ToolCallID}
+		if m.Content != "" {
+			ms.Preview = m.Content[:min(len(m.Content), 200)]
+		}
+		msgs = append(msgs, ms)
+	}
+	b, _ := json.Marshal(msgs)
+	slog.Warn("investigate: final request dump",
+		"step", step,
+		"model", req.Model,
+		"n_messages", len(req.Messages),
+		"max_tokens", req.MaxTokens,
+		"chat_template_kwargs", req.ChatTemplateKwargs,
+		"messages", string(b),
+	)
 }
 
 // condenseSeries detects a Prometheus/VictoriaMetrics matrix response and
