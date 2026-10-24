@@ -174,5 +174,22 @@ func TestKbQueryFallbacks(t *testing.T) {
 		}
 	})
 
+	t.Run("case-insensitive-dedup", func(t *testing.T) {
+		// Alert hint produces "Keycloak fails to start after image upgrade" (≥3 words).
+		// The query after ident-stripping is "keycloak fails start".
+		// The "Keycloak fails to start after image upgrade" fragment must NOT also
+		// appear as "keycloak fails to start after image upgrade" later.
+		alertHint := "Keycloak fails to start after image upgrade: Cannot lazily initialize"
+		got := kbQueryFallbacks("keycloak fails start", "keycloak", alertHint)
+		seen := map[string]bool{}
+		for _, g := range got {
+			key := strings.ToLower(g)
+			if seen[key] {
+				t.Errorf("duplicate candidate (case-insensitive): %q", g)
+			}
+			seen[key] = true
+		}
+	})
+
 	_ = cases
 }

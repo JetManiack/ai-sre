@@ -502,7 +502,11 @@ func alertHintFragments(hint, originalQuery, strippedQuery string) []string {
 	// "[FIRING:1]", etc. add noise and are never KB search terms.
 	hint = reBracketedText.ReplaceAllString(hint, " ")
 	parts := reSentenceSep.Split(hint, -1)
-	seen := map[string]bool{originalQuery: true, strippedQuery: true, "": true}
+	seen := map[string]bool{
+		strings.ToLower(originalQuery): true,
+		strings.ToLower(strippedQuery): true,
+		"":                             true,
+	}
 
 	type frag struct {
 		text  string
@@ -514,10 +518,10 @@ func alertHintFragments(hint, originalQuery, strippedQuery string) []string {
 		s = reDanglingDot.ReplaceAllString(s, " ")
 		s = reBoilerplate.ReplaceAllString(s, " ")
 		s = strings.Join(strings.Fields(s), " ")
-		if len(strings.Fields(s)) < 3 || seen[s] {
+		if len(strings.Fields(s)) < 3 || seen[strings.ToLower(s)] {
 			continue
 		}
-		seen[s] = true
+		seen[strings.ToLower(s)] = true
 		frags = append(frags, frag{s, len(strings.Fields(s))})
 	}
 	// Sort longest-first so the most specific fragment is tried first.
@@ -549,6 +553,19 @@ func kbQueryFallbacks(query, workload, alertHint string) []string {
 	noIdents = strings.Join(strings.Fields(noIdents), " ")
 
 	words := strings.Fields(noIdents)
+
+	// seen tracks all candidates we've already added (case-insensitively),
+	// seeded with the original query so we never retry with the same string.
+	seen := map[string]bool{strings.ToLower(query): true}
+	add := func(s string) bool {
+		key := strings.ToLower(s)
+		if s == "" || seen[key] {
+			return false
+		}
+		seen[key] = true
+		return true
+	}
+
 	var out []string
 
 	// Step 0: alert summary split into fragments at punctuation (:;.?\n),
@@ -556,15 +573,17 @@ func kbQueryFallbacks(query, workload, alertHint string) []string {
 	// This gives "Cannot lazily initialize collection of role" before the
 	// long whole-sentence that ANDs every word and always returns empty.
 	for _, frag := range alertHintFragments(alertHint, query, noIdents) {
-		out = append(out, frag)
+		if add(frag) {
+			out = append(out, frag)
+		}
 	}
 
-	if noIdents != query && noIdents != "" {
+	if add(noIdents) {
 		out = append(out, noIdents)
 	}
 	if len(words) > 2 {
 		half := strings.Join(words[:len(words)/2+1], " ")
-		if half != noIdents {
+		if add(half) {
 			out = append(out, half)
 		}
 	}
@@ -574,13 +593,11 @@ func kbQueryFallbacks(query, workload, alertHint string) []string {
 		firstWord := words[0]
 		if workload != "" && workload != firstWord {
 			candidate := workload + " " + firstWord
-			if (len(out) == 0 || out[len(out)-1] != candidate) && candidate != query {
+			if add(candidate) {
 				out = append(out, candidate)
 			}
 		}
-		// Only add the bare first word if it's not already the original query
-		// (retrying with the same string is pointless).
-		if firstWord != query && (len(out) == 0 || out[len(out)-1] != firstWord) {
+		if add(firstWord) {
 			out = append(out, firstWord)
 		}
 	}
