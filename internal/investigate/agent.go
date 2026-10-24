@@ -585,22 +585,27 @@ func logFinalRequestDump(req ChatRequest, step int, debugMode bool) {
 	)
 }
 
-// condensePodList detects a kubernetes-mcp-server YAML pod list and replaces
-// it with one line per pod ("name status restarts") when the output exceeds
-// 4 KB. Non-pod-list outputs pass through unchanged.
+// condensePodList detects a kubernetes-mcp-server pod list (YAML or table
+// format) and replaces it with one line per pod when the output exceeds 4 KB.
+// Non-pod-list outputs pass through unchanged.
 func condensePodList(out string) string {
 	const maxBytes = 4096
 	if len(out) <= maxBytes {
 		return out
 	}
-	// Quick heuristic: YAML pod list contains these markers.
+
+	// Table format: first non-empty line is "NAMESPACE … NAME … STATUS … RESTARTS …"
+	if pods := condensePodTable(out); pods != "" {
+		return pods
+	}
+
+	// YAML format: contains metadata: + name: + phase:/containerStatuses:
 	if !strings.Contains(out, "metadata:") ||
 		!strings.Contains(out, "name:") ||
 		(!strings.Contains(out, "phase:") && !strings.Contains(out, "containerStatuses:")) {
 		return out
 	}
 
-	// Parse line-by-line: extract name, phase/status, restartCount.
 	type podSummary struct {
 		name     string
 		phase    string
@@ -654,6 +659,72 @@ func condensePodList(out string) string {
 			phase = "Unknown"
 		}
 		sb.WriteString(fmt.Sprintf("  %s | %s | %d\n", p.name, phase, p.restarts))
+	}
+	return sb.String()
+}
+
+// condensePodTable handles the table output format from kubernetes-mcp-server
+// (--list-output=table). Returns "" if the output is not a pod table.
+// Header: NAMESPACE   APIVERSION   KIND   NAME   READY   STATUS   RESTARTS   AGE
+func condensePodTable(out string) string {
+	lines := strings.Split(out, "\n")
+	// Find the header line.
+	hdrIdx := -1
+	var nameCol, statusCol, restartsCol int
+	for i, line := range lines {
+		upper := strings.ToUpper(line)
+		if strings.Contains(upper, "NAME") && strings.Contains(upper, "STATUS") && strings.Contains(upper, "RESTART") {
+			hdrIdx = i
+			// Determine column positions by header field offsets.
+			nameCol = strings.Index(upper, "NAME")
+			statusCol = strings.Index(upper, "STATUS")
+			restartsCol = strings.Index(upper, "RESTART")
+			break
+		}
+	}
+	if hdrIdx < 0 || nameCol < 0 || statusCol < 0 || restartsCol < 0 {
+		return ""
+	}
+
+	type podSummary struct {
+		name     string
+		status   string
+		restarts string
+	}
+	var pods []podSummary
+	for _, line := range lines[hdrIdx+1:] {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		extract := func(start int) string {
+			if start >= len(line) {
+				return ""
+			}
+			end := strings.IndexByte(line[start:], ' ')
+			if end < 0 {
+				return strings.TrimSpace(line[start:])
+			}
+			return strings.TrimSpace(line[start : start+end])
+		}
+		name := extract(nameCol)
+		if name == "" {
+			continue
+		}
+		pods = append(pods, podSummary{
+			name:     name,
+			status:   extract(statusCol),
+			restarts: extract(restartsCol),
+		})
+	}
+	if len(pods) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("pod list summary (condensed, %d pods):\n", len(pods)))
+	sb.WriteString("name | status | restarts\n")
+	for _, p := range pods {
+		sb.WriteString(fmt.Sprintf("  %s | %s | %s\n", p.name, p.status, p.restarts))
 	}
 	return sb.String()
 }
