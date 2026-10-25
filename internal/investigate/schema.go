@@ -23,15 +23,6 @@ type InvestigationResult struct {
 	// ActionNamespace is the k8s namespace. Always clamped to Candidate.Workload.Namespace.
 	ActionNamespace string `json:"action_namespace,omitempty"`
 
-	// EscalateTo is a board actor ID / nickname to @-mention.
-	EscalateTo string `json:"escalate_to,omitempty"`
-	// EscalateMessage is the board post body. Pre-written by the LLM.
-	EscalateMessage string `json:"escalate_message,omitempty"`
-
-	// NoProblemFound is set internally (not from the LLM schema) when the model
-	// returned action="none" — meaning it explicitly concluded nothing is wrong.
-	// Used by the board sink to suppress the @mention (informational post only).
-	NoProblemFound bool `json:"-"`
 }
 
 // FixResult is the structured output of Phase 2 (verify after action).
@@ -42,8 +33,6 @@ type FixResult struct {
 	Success bool `json:"success"`
 	// VerificationRU describes what was checked and what was observed, in Russian.
 	VerificationRU string `json:"verification_ru"`
-	// EscalateMessage is filled when Success=false, describing what still needs attention.
-	EscalateMessage string `json:"escalate_message,omitempty"`
 }
 
 // ActionKind is what the agent recommends after diagnosis.

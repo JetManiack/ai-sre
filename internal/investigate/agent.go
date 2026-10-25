@@ -335,9 +335,7 @@ Rules:
 - confidence: a float between 0.0 and 1.0 reflecting how certain you are of the root cause. MUST be > 0 if you have evidence. Use 0.9–1.0 for clear evidence, 0.7–0.9 for probable, 0.5–0.7 for uncertain.
 - root_cause_ru: ALWAYS fill this — one sentence summary of the root cause in Russian. Required even when action=escalate.
 - suggested_fix_ru: ALWAYS fill this — one sentence on the recommended fix in Russian. Required even when action=escalate.
-- recommended_action: "escalate" posts to the board; other actions execute only if in the allowlist.
-- escalate_message: a board post in Russian (3–5 sentences) with root cause, evidence and fix. Do NOT put root_cause_ru content only here — fill root_cause_ru and suggested_fix_ru separately as well. For CVE alerts include CVE IDs, image, and fixed-in version.
-- escalate_to: "{{.EscalateToCodeBugs}}" for code bugs, "{{.EscalateToInfra}}" for operator/infra decisions.
+- recommended_action: "escalate" means you have posted (or will post) findings to the board via create_thread/reply; other actions execute only if in the allowlist.
 - For tools requiring time range: use current time as end, subtract window for start (RFC3339 format).
 
 Knowledge base search (list_documents / similar tools):
@@ -349,6 +347,17 @@ Knowledge base search (list_documents / similar tools):
 Pod listing:
 - pods_list* tools return the complete list for the queried scope. Do not call pods_list again with different label selectors for the same namespace — the result will be the same.
 - If you need to narrow down, use describe or logs on the specific pod instead.
+{{- if .HasBoard}}
+
+Board (coordination):
+If create_thread and reply tools are available, use them to narrate the investigation in real time:
+- At the start: call create_thread with a title like "[ai-sre] <namespace>/<workload> <kind>" and an opening message describing the alert.
+- After each significant finding (tool result, hypothesis formed, dead-end ruled out): call reply on that thread with a short update in Russian.
+- At the end: reply with the final conclusion (root cause, action, confidence) before producing your JSON answer.
+- Use the same thread for the entire investigation — do not create multiple threads for one alert.
+- Keep replies concise (2–4 sentences). Do not paste raw metric dumps — summarise what you found.
+- If the board tools are missing or return an error, skip silently and continue the investigation.
+{{end}}
 {{- if .SystemPrompt}}
 Site context:
 {{.SystemPrompt}}
@@ -362,12 +371,20 @@ func (a *Agent) systemPrompt(_ observer.Candidate) string {
 	if cfg.EscalateToInfra == "" {
 		cfg.EscalateToInfra = "on-call-ops"
 	}
+	hasBoard := false
+	for _, t := range a.activeTools() {
+		if t.Name == "create_thread" {
+			hasBoard = true
+			break
+		}
+	}
 	var buf bytes.Buffer
 	_ = systemPromptTmpl.Execute(&buf, struct {
 		config.InvestigateConfig
-		Sources []config.Source
-		NowUTC  string
-	}{cfg, a.sources, time.Now().UTC().Format(time.RFC3339)})
+		Sources  []config.Source
+		NowUTC   string
+		HasBoard bool
+	}{cfg, a.sources, time.Now().UTC().Format(time.RFC3339), hasBoard})
 	return buf.String()
 }
 
@@ -487,27 +504,8 @@ func parseResult(content string) (InvestigationResult, error) {
 	case ActionEscalate, ActionPodRestart, ActionRolloutRestart, ActionScale, ActionSystemdRestart:
 		// valid
 	default:
-		// Model returned an unknown or empty action (e.g. "none"). When the model
-		// explicitly says "none" it means it found no problem — mark that so the
-		// board sink can post without pinging the on-call actor.
-		if r.RecommendedAction == "none" {
-			r.NoProblemFound = true
-		}
 		slog.Info("investigate: unknown recommended_action, defaulting to escalate", "action", r.RecommendedAction)
 		r.RecommendedAction = ActionEscalate
-	}
-	// Gemma-4 sometimes puts all text into escalate_message and leaves
-	// root_cause_ru/suggested_fix_ru empty. Fall back to the first sentence of
-	// escalate_message so memory_recall and the board sink have something useful.
-	if r.RootCauseRU == "" && r.EscalateMessage != "" {
-		if idx := strings.IndexAny(r.EscalateMessage, ".!?\n"); idx >= 0 {
-			r.RootCauseRU = strings.TrimSpace(r.EscalateMessage[:idx+1])
-		} else {
-			r.RootCauseRU = r.EscalateMessage
-		}
-	}
-	if r.SuggestedFixRU == "" && r.EscalateMessage != "" {
-		r.SuggestedFixRU = "См. escalate_message."
 	}
 	// Gemma-4 consistently omits confidence even when it has clear evidence.
 	// Apply a safe default ONLY for escalate (board post, no execution risk).
@@ -538,18 +536,12 @@ func clampResult(r InvestigationResult, c observer.Candidate) InvestigationResul
 }
 
 func (a *Agent) failedResult(c observer.Candidate, reason string) InvestigationResult {
-	escalateTo := a.cfg.EscalateToInfra
-	if escalateTo == "" {
-		escalateTo = "on-call-ops"
-	}
 	return InvestigationResult{
 		RootCauseRU:       fmt.Sprintf("Расследование не завершено: %s", reason),
 		Evidence:          c.Evidence,
 		Confidence:        0,
 		SuggestedFixRU:    "Проверьте вручную.",
 		RecommendedAction: ActionEscalate,
-		EscalateTo:        escalateTo,
-		EscalateMessage:   fmt.Sprintf("⚠️ Агент не смог завершить расследование для %s/%s (%s): %s\n\nПроверьте вручную.", c.Workload.Namespace, c.Workload.Name, c.Kind, reason),
 	}
 }
 
@@ -738,8 +730,6 @@ func investigationSchema() json.RawMessage {
 				"recommended_action": map[string]any{"type": "string", "enum": []string{"escalate", "pod_restart", "rollout_restart", "scale", "systemd_restart"}},
 				"action_target":      str(0, 100),
 				"action_namespace":   str(0, 100),
-				"escalate_to":        str(0, 50),
-				"escalate_message":   str(0, 600),
 			},
 			"required": []string{"root_cause_ru", "evidence", "confidence", "suggested_fix_ru", "recommended_action"},
 		},

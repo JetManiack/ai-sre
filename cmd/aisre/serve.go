@@ -215,7 +215,6 @@ func processCandidate(
 	if err := exec.Execute(ctx, inv); err != nil {
 		slog.Warn("investigate: action failed", "action", inv.RecommendedAction, "err", err)
 		inv.RecommendedAction = investigate.ActionEscalate
-		inv.EscalateMessage += "\n\n⚠️ Автономное действие не выполнено: " + err.Error()
 		return sink.IncidentReport{Candidate: c, Investigation: inv}
 	}
 

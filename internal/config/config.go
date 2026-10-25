@@ -167,23 +167,8 @@ type ActionsConfig struct {
 
 // SinksConfig lists output channels.
 type SinksConfig struct {
-	StdoutJSON bool            `yaml:"stdout_json"`
-	Board      BoardSinkConfig `yaml:"board"`
-	Webhook    WebhookConfig   `yaml:"webhook"`
-}
-
-// BoardSinkConfig configures the coordination board MCP client.
-type BoardSinkConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	URL         string `yaml:"url"`
-	Token       string `yaml:"token"`
-	MinSeverity string `yaml:"min_severity"`
-	// ThreadID pins all escalations to a specific board thread.
-	// If empty, a new thread is created per workload.
-	ThreadID string `yaml:"thread_id"`
-	// MentionActors maps severity levels to board actor IDs to @-mention.
-	// e.g. {"critical": "operator-actor-id"}
-	MentionActors map[string]string `yaml:"mention_actors"`
+	StdoutJSON bool          `yaml:"stdout_json"`
+	Webhook    WebhookConfig `yaml:"webhook"`
 }
 
 // WebhookConfig is a generic HTTP POST sink.

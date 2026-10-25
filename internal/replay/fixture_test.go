@@ -167,32 +167,28 @@ func TestCheckExpected(t *testing.T) {
 		RootCauseContainsAll: []string{"ModelNotMapped", "litellm"},
 	}
 
-	dec := func(action investigate.ActionKind, confidence float64, rootCause, escalateMsg string) investigate.InvestigationResult {
-		return investigate.InvestigationResult{RecommendedAction: action, Confidence: confidence, RootCauseRU: rootCause, EscalateMessage: escalateMsg}
+	dec := func(action investigate.ActionKind, confidence float64, rootCause string) investigate.InvestigationResult {
+		return investigate.InvestigationResult{RecommendedAction: action, Confidence: confidence, RootCauseRU: rootCause}
 	}
 	// happy path
-	if err := CheckExpected(exp, dec("escalate", 0.9, "ModelNotMapped error in litellm alias config", "")); err != nil {
+	if err := CheckExpected(exp, dec("escalate", 0.9, "ModelNotMapped error in litellm alias config")); err != nil {
 		t.Errorf("expected nil, got: %v", err)
 	}
 	// wrong action
-	if err := CheckExpected(exp, dec("pod_restart", 0.9, "ModelNotMapped litellm", "")); err == nil {
+	if err := CheckExpected(exp, dec("pod_restart", 0.9, "ModelNotMapped litellm")); err == nil {
 		t.Error("expected error for wrong action")
 	}
 	// low confidence
-	if err := CheckExpected(exp, dec("escalate", 0.5, "ModelNotMapped litellm", "")); err == nil {
+	if err := CheckExpected(exp, dec("escalate", 0.5, "ModelNotMapped litellm")); err == nil {
 		t.Error("expected error for low confidence")
 	}
 	// contains_all fails (missing "litellm")
-	if err := CheckExpected(exp, dec("escalate", 0.9, "ModelNotMapped issue", "")); err == nil {
+	if err := CheckExpected(exp, dec("escalate", 0.9, "ModelNotMapped issue")); err == nil {
 		t.Error("expected error for missing contains_all token")
 	}
 	// contains passes with any match
 	expAny := ExpectedOutcome{Action: "escalate", ConfidenceMin: 0.0, RootCauseContains: []string{"alias", "xyz"}}
-	if err := CheckExpected(expAny, dec("escalate", 0.1, "alias removed", "")); err != nil {
+	if err := CheckExpected(expAny, dec("escalate", 0.1, "alias removed")); err != nil {
 		t.Errorf("expected nil (any match), got: %v", err)
-	}
-	// diagnosis in escalate_message, not root_cause_ru
-	if err := CheckExpected(exp, dec("escalate", 0.9, "", "ModelNotMapped error in litellm alias config")); err != nil {
-		t.Errorf("expected nil (escalate_message fallback), got: %v", err)
 	}
 }
