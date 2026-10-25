@@ -175,10 +175,9 @@ func parseFixResult(content string) (FixResult, error) {
 
 func failedFix(action ActionKind, reason string) FixResult {
 	return FixResult{
-		ActionTaken:     action,
-		Success:         false,
-		VerificationRU:  fmt.Sprintf("Проверка не завершена: %s", reason),
-		EscalateMessage: fmt.Sprintf("⚠️ Действие %s было выполнено, но проверка результата не завершилась: %s\n\nПроверьте вручную.", action, reason),
+		ActionTaken:    action,
+		Success:        false,
+		VerificationRU: fmt.Sprintf("Проверка не завершена: %s", reason),
 	}
 }
 

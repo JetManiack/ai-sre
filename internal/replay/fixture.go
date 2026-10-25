@@ -209,8 +209,8 @@ func CheckExpected(exp ExpectedOutcome, r investigate.InvestigationResult) error
 	if r.Confidence < exp.ConfidenceMin {
 		return fmt.Errorf("confidence: got %.2f, want >= %.2f", r.Confidence, exp.ConfidenceMin)
 	}
-	// Search both root_cause_ru and escalate_message for diagnostic substrings.
-	corpus := strings.ToLower(r.RootCauseRU + " " + r.EscalateMessage)
+	// Search root_cause_ru for diagnostic substrings.
+	corpus := strings.ToLower(r.RootCauseRU)
 	if len(exp.RootCauseContains) > 0 {
 		matched := false
 		for _, substr := range exp.RootCauseContains {
@@ -220,7 +220,7 @@ func CheckExpected(exp ExpectedOutcome, r investigate.InvestigationResult) error
 			}
 		}
 		if !matched {
-			return fmt.Errorf("root_cause_ru+escalate_message: none of %v matched in %q", exp.RootCauseContains, corpus)
+			return fmt.Errorf("root_cause_ru: none of %v matched in %q", exp.RootCauseContains, corpus)
 		}
 	}
 	for _, substr := range exp.RootCauseContainsAll {

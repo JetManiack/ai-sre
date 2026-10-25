@@ -16,7 +16,7 @@ import (
 
 // IncidentReport is the full output of one investigation+fix cycle.
 type IncidentReport struct {
-	Candidate   observer.Candidate
+	Candidate     observer.Candidate
 	Investigation investigate.InvestigationResult
 	// Fix is nil when the recommended action was escalate (no execution).
 	Fix *investigate.FixResult
@@ -72,83 +72,6 @@ func (s StdoutJSON) Send(_ context.Context, r IncidentReport) error {
 	return err
 }
 
-// BoardSink posts to the coordination board via MCP HTTP.
-// Posts when: recommended_action=escalate OR fix failed.
-type BoardSink struct {
-	client *boardMCPClient
-	cfg    config.BoardSinkConfig
-}
-
-func NewBoardSink(cfg config.BoardSinkConfig) *BoardSink {
-	return &BoardSink{
-		cfg:    cfg,
-		client: newBoardMCPClient(cfg.URL, cfg.Token),
-	}
-}
-
-func (s *BoardSink) Send(ctx context.Context, r IncidentReport) error {
-	inv := r.Investigation
-	shouldPost := inv.RecommendedAction == investigate.ActionEscalate ||
-		(r.Fix != nil && !r.Fix.Success)
-	if !shouldPost {
-		return nil
-	}
-	if s.cfg.URL == "" {
-		slog.Warn("sink: board URL not configured, skipping escalation")
-		return nil
-	}
-
-	sev := string(r.Candidate.Severity)
-	if minSev := s.cfg.MinSeverity; minSev != "" && severityBelow(sev, minSev) {
-		return nil
-	}
-
-	body := inv.EscalateMessage
-	if r.Fix != nil && !r.Fix.Success {
-		body = r.Fix.EscalateMessage
-		if body == "" {
-			body = fmt.Sprintf("⚠️ %s/%s: действие %s не решило проблему.\n\nПричина: %s\n\nПроверка: %s",
-				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
-				r.Fix.ActionTaken, inv.RootCauseRU, r.Fix.VerificationRU)
-		}
-	}
-	if body == "" {
-		// Detect a failed/empty investigation (confidence=0, empty fields).
-		if inv.Confidence == 0 && inv.RootCauseRU == "" {
-			body = fmt.Sprintf("⚠️ [ai-sre] расследование не завершено для %s/%s\n\nАлерт: %s\n\nПроверьте вручную — агент не смог сформировать ответ (пустое поле root_cause). Возможные причины: контекст превысил max_tokens, или модель вернула только reasoning_content. Смотрите логи пода ai-sre.",
-				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name, r.Candidate.Summary)
-		} else {
-			body = fmt.Sprintf("🚨 %s/%s: %s\n\nПричина: %s\n\nРекомендация: %s",
-				r.Candidate.Workload.Namespace, r.Candidate.Workload.Name,
-				r.Candidate.Summary, inv.RootCauseRU, inv.SuggestedFixRU)
-		}
-	}
-	// Add @mention only when a human is actually needed.
-	// NoProblemFound is set internally only when the model returned action="none"
-	// (a positive "no problem" signal from a clean parse). It is never set by
-	// failedResult() or the degraded-parse path, so those always mention via
-	// !inv.NoProblemFound. Failed fix is an independent unambiguous signal.
-	// We do NOT use confidence==0 here — it is model-synthesized and would let
-	// the model suppress a mention by reporting high confidence alongside "none".
-	needsMention := inv.EscalateTo != "" &&
-		((r.Fix != nil && !r.Fix.Success) || !inv.NoProblemFound)
-	if needsMention {
-		body = fmt.Sprintf("@%s %s", inv.EscalateTo, body)
-	}
-
-	threadID := s.cfg.ThreadID
-	if threadID == "" {
-		title := fmt.Sprintf("[ai-sre] %s/%s %s", r.Candidate.Workload.Namespace, r.Candidate.Workload.Name, r.Candidate.Kind)
-		tid, err := s.client.createThread(ctx, title, body)
-		if err != nil {
-			return fmt.Errorf("board sink: create thread: %w", err)
-		}
-		slog.Info("sink: board thread created", "thread_id", tid, "workload", r.Candidate.Workload.Name)
-		return nil
-	}
-	return s.client.reply(ctx, threadID, body)
-}
-
 // WebhookSink POST-s a JSON payload to a generic HTTP endpoint.
 // Always posts the full report.
 type WebhookSink struct {
@@ -171,8 +94,6 @@ func (s *WebhookSink) Send(ctx context.Context, r IncidentReport) error {
 		"root_cause_ru":    inv.RootCauseRU,
 		"suggested_fix_ru": inv.SuggestedFixRU,
 		"evidence":         inv.Evidence,
-		"escalate_to":      inv.EscalateTo,
-		"escalate_message": inv.EscalateMessage,
 	}
 	if r.Fix != nil {
 		payload["fix_action"] = string(r.Fix.ActionTaken)
@@ -182,20 +103,11 @@ func (s *WebhookSink) Send(ctx context.Context, r IncidentReport) error {
 	return s.client.post(ctx, payload)
 }
 
-// severityBelow returns true if a < b in Low<Medium<High<Critical order.
-func severityBelow(a, b string) bool {
-	order := map[string]int{"low": 0, "medium": 1, "high": 2, "critical": 3}
-	return order[strings.ToLower(a)] < order[strings.ToLower(b)]
-}
-
 // Build constructs the sink stack from config.
 func Build(cfg config.SinksConfig) Sink {
 	var sinks []Sink
 	if cfg.StdoutJSON {
 		sinks = append(sinks, StdoutJSON{})
-	}
-	if cfg.Board.Enabled && cfg.Board.URL != "" {
-		sinks = append(sinks, NewBoardSink(cfg.Board))
 	}
 	if cfg.Webhook.Enabled && cfg.Webhook.URL != "" {
 		sinks = append(sinks, NewWebhookSink(cfg.Webhook))

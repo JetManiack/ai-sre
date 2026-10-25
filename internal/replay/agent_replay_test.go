@@ -81,8 +81,6 @@ func runFixtureTest(t *testing.T, fixtureDir string) {
 		Confidence:        0.85,
 		SuggestedFixRU:    "Проверьте конфигурацию и откатите изменения.",
 		RecommendedAction: f.Expected.Action,
-		EscalateTo:        "on-call-ops",
-		EscalateMessage:   "Синтетическое сообщение эскалации.",
 	}
 
 	llm := &mockLLM{
